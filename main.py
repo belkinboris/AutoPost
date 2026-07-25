@@ -568,6 +568,15 @@ def _channel_dict(s, ch: Channel) -> dict:
     d["queue_count"] = 0
     d["published_count"] = 0
     d["approval_deadline"] = None
+    # Целевая глубина очереди зависит от того, оплачивал ли владелец (см.
+    # tasks.queue_target_for_user), поэтому приходит здесь, а не в /api/config:
+    # тот отдаётся без авторизации и одинаков для всех.
+    d["queue_target"] = tasks.MIN_QUEUE
+    try:
+        d["queue_target"] = tasks.queue_target_for_user(s, ch.user_id)
+    except Exception:
+        logger.exception(f"_channel_dict: не удалось определить queue_target для канала {ch.id}")
+        s.rollback()
     try:
         next_post = s.exec(
             select(Post).where(Post.channel_id == ch.id, Post.status == "pending")

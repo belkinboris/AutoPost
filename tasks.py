@@ -13,7 +13,7 @@ import config
 import generator
 import research
 import telegram_api
-from database import session, Channel, ChannelRule, Source, Post, User, TrafficAttribution, PostApproval
+from database import session, Channel, ChannelRule, Source, Post, User, TrafficAttribution, PostApproval, Payment
 from sqlmodel import select
 
 logger = logging.getLogger(__name__)
@@ -913,10 +913,40 @@ async def _process_main_bot_updates():
         logger.info(f"main_bot /start: отправлено приветствие chat_id={chat_id}")
 
 
-MIN_QUEUE = 3  # минимум постов в очереди
+MIN_QUEUE = 3        # глубина очереди на бесплатном старте
+PAID_QUEUE = 7       # "очередь на неделю" -- ровно то, что обещает оффер после
+                     # первого удачного поста (см. fpFeedbackGood во фронте:
+                     # «Автопост подготовит 7 постов по вашей теме»). Раньше это
+                     # обещание не выполнялось вообще ничем: оплата только
+                     # начисляла токены, а очередь как держалась на 3, так и
+                     # оставалась на 3 -- у оплатившего не появлялось ничего,
+                     # за что он заплатил, кроме баланса.
+
+# За один тик догенерируем не больше этого числа постов на канал. Заполнение
+# 3 -> 7 это до 4 генераций подряд, каждая с классификацией темы, поиском и
+# самой генерацией -- пачкой в одном тике они забили бы весь цикл планировщика
+# (tick общий на всех пользователей). Очередь дособерётся за несколько минут.
+MAX_GEN_PER_TICK = 2
+
+
+def queue_target_for_user(s, user_id: int) -> int:
+    """
+    Сколько готовых постов держим наготове. Платящему -- неделя вперёд, всем
+    остальным -- стартовые 3.
+
+    Признак оплаты -- любой платёж со статусом "paid" (User.plan в схеме есть,
+    но не используется нигде в коде, полагаться на него нельзя). Отдельная
+    система тарифов для этого не нужна и намеренно не заводится.
+    """
+    from sqlmodel import select as sel
+    paid = s.exec(
+        sel(Payment).where(Payment.user_id == user_id, Payment.status == "paid")
+    ).first()
+    return PAID_QUEUE if paid else MIN_QUEUE
+
 
 async def _refill_if_active(channel_id: int):
-    """Догенерирует посты до MIN_QUEUE если канал активен."""
+    """Догенерирует посты до целевой глубины очереди если канал активен."""
     with session() as s:
         channel = s.get(Channel, channel_id)
         if not channel or not channel.enabled:
@@ -928,9 +958,10 @@ async def _refill_if_active(channel_id: int):
                 Post.status.in_(["pending", "scheduled"])
             )
         ).all())
+        target = queue_target_for_user(s, channel.user_id)
 
-    if pending_count < MIN_QUEUE:
-        for _ in range(MIN_QUEUE - pending_count):
+    if pending_count < target:
+        for _ in range(min(target - pending_count, MAX_GEN_PER_TICK)):
             try:
                 await generate_for_channel(channel_id, force_pending=True)
             except Exception as e:

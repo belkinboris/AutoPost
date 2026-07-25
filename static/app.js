@@ -464,7 +464,7 @@ function _nextGenerationLabel(c){
   // честный ответ "в ближайшие минуты". Раньше здесь всегда считался
   // интервал, и шапка канала обещала "через 12ч" ровно в тот момент, когда
   // пост на самом деле появлялся через минуту.
-  const minQueue=App.cfg?.min_queue||3;
+  const minQueue=c.queue_target||App.cfg?.min_queue||3;
   if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
   // Время следующей ГЕНЕРАЦИИ (не публикации!) = последняя генерация + интервал,
   // но не в прошлом. Публикация — отдельное понятие, происходит либо по явному
@@ -2097,7 +2097,9 @@ function renderQueueBody(){
   // force_pending=True и таймера не имеют вовсе (см. tasks.py).
   // Теперь здесь только факты о состоянии очереди, а обещание про таймер
   // переехало на конкретную карточку поста, у которой этот таймер есть.
-  const minQueue = App.cfg?.min_queue || 3;
+  // Цель по глубине очереди приходит с канала (зависит от оплаты владельца),
+  // App.cfg.min_queue -- только фолбэк для старого закэшированного фронта.
+  const minQueue = c.queue_target || App.cfg?.min_queue || 3;
   const connected = !!(c.tg_chat && c.verified);
   const paused = c.enabled === false;
   const queueStatus = _renderQueueStatus(c, pending.length, {minQueue, connected, paused});
@@ -2258,8 +2260,12 @@ function toggleQueueHelp(){
 function _renderQueueSlots(pendingCount, minQueue){
   const missing = Math.max(0, minQueue - pendingCount);
   if(!missing) return "";
+  // Рисуем не больше трёх заглушек: у оплатившего цель очереди 7, и при одном
+  // готовом посте шесть пунктирных рамок подряд превратили бы экран в забор.
+  // Точное число недостающих постов и так названо словами в статусе выше.
+  const shown = Math.min(missing, 3);
   let out = "";
-  for(let i=0;i<missing;i++){
+  for(let i=0;i<shown;i++){
     out += i===0
       ? `<div class="queue-slot">
            <button class="btn-outline btn-sm" id="queue_gen_btn" onclick="genQueuePost()">+ Написать пост сейчас</button>
