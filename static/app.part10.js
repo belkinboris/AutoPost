@@ -73,9 +73,26 @@ function renderPostCard(p, pubMs, channelEnabled){
     // была ветка, которая путала "канал настроен на автопубликацию по
     // расписанию" с "этот конкретный пост скоро опубликуется" — это и
     // создавало конфликт "Ждёт подтверждения" + синий таймер одновременно.
-    statusPill=`<div class="status-pill status-pill-yellow">Ждёт вашего подтверждения</div>`;
+    //
+    // Обещание про автопубликацию показываем ТОЛЬКО если у поста реально
+    // заведён дедлайн (PostApproval). Такой таймер есть лишь у постов
+    // регулярной генерации по расписанию; посты из онбординга, созданные
+    // вручную и догенерация резерва очереди идут с force_pending=True и сами
+    // не опубликуются никогда (см. tasks.py). Раньше очередь обещала
+    // "опубликуется сам через 30 мин" на уровне всего канала — то есть всем
+    // постам подряд, включая те, у которых никакого таймера нет.
     const created=new Date(p.created_at+"Z").toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
-    subLine=`<div class="status-subline">Создан ${created}</div>`;
+    if(p.approval_deadline){
+      const dl=new Date(p.approval_deadline).getTime();
+      const diff=dl-Date.now();
+      const mm=Math.max(0,Math.floor(diff/60000)),ss=Math.max(0,Math.floor((diff%60000)/1000));
+      const label=diff>0?`⏱ через ${mm}:${String(ss).padStart(2,"0")}, если не подтвердите`:"⏱ публикуется…";
+      statusPill=`<div class="status-pill status-pill-yellow" data-approval-countdown="${dl}">${label}</div>`;
+      subLine=`<div class="status-subline">Не отреагируете — опубликуем этот пост сами</div>`;
+    } else {
+      statusPill=`<div class="status-pill status-pill-yellow">Ждёт вашего решения</div>`;
+      subLine=`<div class="status-subline">Создан ${created} · сам не опубликуется</div>`;
+    }
   }
 
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────

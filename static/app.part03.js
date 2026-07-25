@@ -98,7 +98,7 @@ function renderChanCard(c){
     statusLabel="Автоматическая публикация"; dotClass="status-dot-green";
     subLine=c.enabled===false?"На паузе":`⏱ Следующая генерация ${_nextGenerationLabel(c)}`;
   } else {
-    statusLabel="Публикация после подтверждения"; dotClass="status-dot-accent";
+    statusLabel="Вы подтверждаете каждый пост"; dotClass="status-dot-accent";
     subLine=c.enabled===false?"На паузе":`⏱ Следующая генерация ${_nextGenerationLabel(c)}`;
   }
 

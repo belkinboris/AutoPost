@@ -230,6 +230,11 @@ def get_config():
         "public_url": config.PUBLIC_URL,
         "packages": config.TOKEN_PACKAGES,
         "soft_control_minutes": config.SOFT_CONTROL_APPROVAL_MINUTES,
+        # Целевая глубина очереди -- сколько готовых постов система держит
+        # наготове (tasks.MIN_QUEUE). Фронт показывает "в очереди N из M" и
+        # пустые слоты-заглушки, поэтому значение обязано приходить с сервера,
+        # а не быть захардкожено в двух местах.
+        "min_queue": tasks.MIN_QUEUE,
         "yookassa_enabled": billing.is_configured(),
         # Старый ключ оставлен для совместимости с фронтом, если браузер закэширует app.js.
         "yoomoney_enabled": billing.is_configured(),
@@ -952,7 +957,30 @@ def list_posts(channel_id: int, user: User = Depends(current_user)):
         posts = s.exec(
             select(Post).where(Post.channel_id == channel_id).order_by(Post.created_at.desc())
         ).all()
-        return [p.model_dump() for p in posts]
+        # Дедлайн автопубликации -- ПОштучно, а не одним флагом на канал.
+        # КРИТИЧНО: таймер заводится только для постов регулярной генерации по
+        # расписанию (tick -> generate_for_channel без force_pending). Посты,
+        # созданные вручную ("Сгенерировать пост"), в онбординге и при
+        # догенерации резерва очереди (_refill_if_active), идут с
+        # force_pending=True и таймера НЕ имеют -- они ждут решения
+        # пользователя сколько угодно долго. Раньше очередь показывала общее
+        # обещание "опубликуется сам через 30 мин" на уровне всего канала, и
+        # для большинства постов это была неправда.
+        deadlines = {
+            a.post_id: a.deadline.isoformat() + "Z"
+            for a in s.exec(
+                select(PostApproval).where(
+                    PostApproval.channel_id == channel_id,
+                    PostApproval.status == "waiting",
+                )
+            ).all()
+        }
+        out = []
+        for p in posts:
+            d = p.model_dump()
+            d["approval_deadline"] = deadlines.get(p.id)
+            out.append(d)
+        return out
 
 
 @app.patch("/api/posts/{post_id}")

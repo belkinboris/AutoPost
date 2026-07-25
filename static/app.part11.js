@@ -42,29 +42,28 @@ function renderQueueBody(){
   const history=posts.filter(p=>p.status==="published"||p.status==="rejected");
   const c=App._chan;
 
-  // Пояснительный блок про автопубликацию (task item D) — снимает путаницу
-  // между "пост ждёт подтверждения" и "пост скоро опубликуется сам".
-  const softControlMin = App.cfg?.soft_control_minutes || 30;
-  const autoPublishInfo = c.auto_publish
-    ? `<div class="card" style="background:var(--blue-bg);border:none;margin-bottom:14px;padding:14px 16px">
-        <div style="font-size:13px;color:var(--blue);font-weight:600">Автоматическая публикация</div>
-        <div style="font-size:13px;color:var(--text-dim);margin-top:2px">Посты будут выходить по расписанию ${_intervalLabel(c.interval_hours||12)}.</div>
-        <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--blue)" onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)">Изменить</button>
-      </div>`
-    : `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
-        <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Публикация после подтверждения</div>
-        <div style="font-size:13px;color:var(--text-dim);margin-top:2px">${App.user?.tg_chat_id
-          ? `Новый пост присылаем вам в Telegram с кнопками. Опубликуется сам через ${softControlMin} мин, если не отреагируете.`
-          : `Подтвердить или отклонить можно прямо здесь, в очереди. Опубликуется сам через ${softControlMin} мин, если не отреагируете. Подключите уведомления в Telegram, чтобы подтверждать с телефона, не заходя на сайт.`}</div>
-        <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)" onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)">Открыть настройки</button>
-      </div>`;
+  // ── Статус очереди ────────────────────────────────────────────────────
+  // Заменяет прежний абстрактный баннер «Публикация после подтверждения».
+  // Тот баннер (а) был написан канцеляритом без подлежащих («Подтвердить или
+  // отклонить» — что? «Опубликуется сам» — кто?), (б) висел всегда, даже
+  // когда ничего не требовал от пользователя, и (в) обещал «опубликуется сам
+  // через 30 мин» на уровне всего канала, хотя таймер реально заводится
+  // только у постов регулярной генерации по расписанию — посты из
+  // онбординга, ручные и догенерация резерва очереди идут с
+  // force_pending=True и таймера не имеют вовсе (см. tasks.py).
+  // Теперь здесь только факты о состоянии очереди, а обещание про таймер
+  // переехало на конкретную карточку поста, у которой этот таймер есть.
+  const minQueue = App.cfg?.min_queue || 3;
+  const connected = !!(c.tg_chat && c.verified);
+  const paused = c.enabled === false;
+  const queueStatus = _renderQueueStatus(c, pending.length, {minQueue, connected, paused});
 
   const viewToggle=`<div style="display:flex;gap:8px;margin-bottom:14px">
     <button class="btn-sm ${_queueViewMode==="list"?"btn":"btn-outline"}" onclick="setQueueViewMode('list')">📋 Список</button>
     <button class="btn-sm ${_queueViewMode==="calendar"?"btn":"btn-outline"}" onclick="setQueueViewMode('calendar')">🗓 Календарь</button>
   </div>`;
 
-  let html=autoPublishInfo+viewToggle;
+  let html=queueStatus+viewToggle;
 
   if(_queueViewMode==="calendar"){
     html+=renderQueueCalendar(posts);
@@ -72,23 +71,13 @@ function renderQueueBody(){
     return;
   }
 
-  if(!pending.length){
-    const paused = c && !c.enabled;
-    // КРИТИЧНО (fix): для неподключённого канала tick() вообще не
-    // генерирует посты (см. tasks.py: генерация идёт только для
-    // channel.verified==True) -- "посты скоро появятся автоматически"
-    // было прямой ложью в этом состоянии, ничего не появится, пока канал
-    // не подключат, сколько бы ни ждали.
-    const notConnected = c && !(c.tg_chat && c.verified);
-    if(paused){
-      html+=`<div class="empty"><div class="empty-icon">⏸</div><h3>Канал на паузе</h3><p>При возобновлении автоматически сгенерируются 3 поста.</p></div>`;
-    } else if(notConnected){
-      html+=`<div class="empty"><div class="empty-icon">📡</div><h3>Канал ещё не подключён</h3><p>Посты начнут генерироваться автоматически, как только подключите канал к Telegram.</p>
-        <button class="btn btn-sm" style="margin-top:10px" onclick="setTab('settings')">Подключить →</button>
-      </div>`;
-    } else {
-      html+=`<div class="empty"><div class="empty-icon">✦</div><h3>Очередь пуста</h3><p>Посты скоро появятся автоматически.</p></div>`;
-    }
+  if(paused){
+    // На паузе tick() не генерирует и не публикует ничего -- предлагать здесь
+    // ручную генерацию было бы обманом ожиданий (пост создастся, но так и
+    // будет лежать), поэтому единственное осмысленное действие -- снять паузу.
+    html+=`<div class="empty"><div class="empty-icon">⏸</div><h3>Канал на паузе</h3>
+      <p>Новые посты не создаются и не публикуются, пока канал на паузе.</p></div>`;
+    html+=pending.map(p=>renderPostCard(p, p.scheduled_at?new Date(p.scheduled_at+"Z").getTime():null, c.enabled)).join("");
   } else {
     html+=pending.map((p)=>{
       // КРИТИЧНО (фикс путаницы из задачи): pubMs передаём ТОЛЬКО для
@@ -101,6 +90,11 @@ function renderQueueBody(){
       const pubMs=p.scheduled_at?new Date(p.scheduled_at+"Z").getTime():null;
       return renderPostCard(p, pubMs, c.enabled);
     }).join("");
+    // Пустые слоты-заглушки до minQueue: показывают, сколько постов система
+    // вообще держит наготове (раньше это число нигде не было видно, и понять
+    // "сколько постов должно быть в очереди" было невозможно), и дают явный
+    // способ создать пост прямо сейчас, не уходя в настройки.
+    html+=_renderQueueSlots(pending.length, minQueue);
   }
   if(history.length){
     html+=`<div style="margin-top:20px">
@@ -113,6 +107,143 @@ function renderQueueBody(){
   }
   $("postList").innerHTML=html;
   startNearestCountdown();
+  // Тикает все карточки с реальным дедлайном автопубликации (см.
+  // data-approval-countdown в renderPostCard). Функция сама выходит, если
+  // таких карточек на экране нет.
+  startDashboardCountdowns();
+  _scheduleApprovalRefresh(pending);
+}
+
+// Когда ближайший дедлайн автопубликации истекает, пост публикуется на
+// сервере (tick) -- перечитываем очередь, чтобы карточка не осталась висеть
+// в состоянии "публикуется…" до следующего ручного захода на вкладку.
+let _approvalRefreshTimer=null;
+function _scheduleApprovalRefresh(pending){
+  if(_approvalRefreshTimer){clearTimeout(_approvalRefreshTimer);_approvalRefreshTimer=null;}
+  const deadlines=pending
+    .filter(p=>p.approval_deadline)
+    .map(p=>new Date(p.approval_deadline).getTime())
+    .filter(ms=>ms>Date.now());
+  if(!deadlines.length) return;
+  const soonest=Math.min(...deadlines);
+  _approvalRefreshTimer=setTimeout(()=>{
+    if(App.tab==="queue") renderQueue();
+  }, (soonest-Date.now())+8000);
+}
+
+// ── Статус очереди: что происходит прямо сейчас ───────────────────────
+// Отвечает на три вопроса, на которые интерфейс раньше не отвечал вообще:
+// сколько постов в очереди, когда появится следующий и что вообще будет с
+// готовым постом. Формулировки — с явными подлежащими, без канцелярита.
+function _renderQueueStatus(c, pendingCount, opts){
+  const {minQueue, connected, paused} = opts;
+  const counter = `<b>${pendingCount}</b> из ${minQueue}`;
+  const settingsLink = `onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)"`;
+
+  if(paused){
+    return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;font-weight:600">Канал на паузе</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">Пока канал на паузе, новые посты не создаются и ничего не публикуется. В очереди ${counter}.</div>
+    </div>`;
+  }
+
+  if(!connected){
+    // Главный фикс: раньше это объяснение показывалось ТОЛЬКО при пустой
+    // очереди. У пользователя с одним постом из онбординга (типичный случай:
+    // канал создан, Telegram ещё не подключён) на экране не было вообще
+    // ничего, что объясняло бы, почему второй пост так и не появился.
+    //
+    // Сознательно НЕ повторяем здесь заголовок "Канал не подключён" и кнопку
+    // "Подключить" -- баннер прямо над вкладками уже говорит ровно это (см.
+    // renderChannel). Тут только то, чего там нет: что происходит с очередью.
+    return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Новые посты пока не создаются</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+        В очереди ${counter}. Сами по расписанию посты начнут появляться после подключения канала.
+        А написать пост можно прямо сейчас — кнопкой ниже.
+      </div>
+    </div>`;
+  }
+
+  if(c.auto_publish){
+    return `<div class="card" style="background:var(--blue-bg);border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--blue);font-weight:600">Автопилот включён</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+        Мы сами пишем и публикуем посты — ${_intervalLabel(c.interval_hours||12)}. Подтверждать ничего не нужно. В очереди ${counter}.
+      </div>
+      <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--blue)" ${settingsLink}>Изменить</button>
+    </div>`;
+  }
+
+  // Режим "ничего не выходит без решения пользователя".
+  const softControlMin = App.cfg?.soft_control_minutes || 30;
+  const refillLine = pendingCount < minQueue
+    ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
+    : `Очередь заполнена. Как только опубликуете один пост, мы подготовим следующий.`;
+
+  return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
+    <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Вы решаете, что публиковать</div>
+    <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+      В очереди ${counter}. Ни один пост не попадёт в канал, пока вы не нажмёте «Опубликовать». ${refillLine}
+    </div>
+    <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
+      onclick="toggleQueueHelp()" id="queue_help_btn">Подробнее ▾</button>
+    <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
+      Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>
+      У поста, написанного по расписанию, есть обратный отсчёт: если вы не отреагируете за ${softControlMin} мин, мы опубликуем его сами. Такой пост видно по таймеру на карточке.<br>
+      Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>
+      ${App.user?.tg_chat_id
+        ? `Мы дублируем такие посты вам в Telegram — можно решать с телефона, не заходя на сайт.`
+        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Telegram</a>, чтобы решать с телефона, не заходя на сайт.`}
+      <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)" ${settingsLink}>Открыть настройки</button>
+    </div>
+  </div>`;
+}
+
+function toggleQueueHelp(){
+  const el=$("queue_help"), btn=$("queue_help_btn");
+  if(!el) return;
+  const hidden=el.classList.contains("hidden");
+  el.classList.toggle("hidden",!hidden);
+  if(btn) btn.textContent=hidden?"Свернуть ▴":"Подробнее ▾";
+}
+
+// Пустые слоты до minQueue. Делают видимой саму норму «сколько постов должно
+// быть наготове» и дают явную кнопку создать пост сейчас, вместо того чтобы
+// гадать, когда он появится сам.
+function _renderQueueSlots(pendingCount, minQueue){
+  const missing = Math.max(0, minQueue - pendingCount);
+  if(!missing) return "";
+  let out = "";
+  for(let i=0;i<missing;i++){
+    out += i===0
+      ? `<div class="queue-slot">
+           <button class="btn-outline btn-sm" id="queue_gen_btn" onclick="genQueuePost()">+ Написать пост сейчас</button>
+           <div class="queue-slot-hint">Не дожидаясь расписания</div>
+         </div>`
+      : `<div class="queue-slot queue-slot-muted"><div class="queue-slot-hint">Место для ещё одного поста</div></div>`;
+  }
+  return out;
+}
+
+let _genQueueInFlight=false;
+async function genQueuePost(){
+  if(!requireAuth()) return;
+  if(_genQueueInFlight) return;
+  _genQueueInFlight=true;
+  const btn=$("queue_gen_btn");
+  if(btn){btn.innerHTML='<span class="spinner"></span> Пишу пост…';btn.disabled=true;}
+  try{
+    await api("POST","/channels/"+App._chan.id+"/generate",{});
+    trackGoal("post_generated",{source:"queue_slot",channel_id:App._chan.id});
+    toast("Пост готов ✓","ok");
+    await renderQueue();
+  }catch(e){
+    toast(e&&e.message?e.message:"Ошибка запроса","err");
+    if(btn){btn.innerHTML="+ Написать пост сейчас";btn.disabled=false;}
+  }finally{
+    _genQueueInFlight=false;
+  }
 }
 
 // ── КАЛЕНДАРЬ (task item: вид очереди по датам) ────────────────────────
