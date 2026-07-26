@@ -32,7 +32,7 @@ from sqlmodel import select
 
 import config
 import database
-from database import Post
+from database import Post, Channel
 
 router = APIRouter()
 
@@ -91,6 +91,16 @@ def token_economics(
         all_rows = s.exec(
             select(Post.tokens_used).where(Post.created_at >= since)
         ).all()
+        # Разбивка «с поиском / без». Признак берём с канала (Channel.
+        # use_web_search), потому что у поста своего флага нет -- поиск
+        # включается настройкой канала на момент генерации. Если настройку
+        # позже переключили, старые посты попадут не в ту группу, поэтому
+        # цифры показательны на дистанции, а не на единичных постах.
+        search_rows = s.exec(
+            select(Channel.use_web_search, Post.tokens_used)
+            .join(Channel, Channel.id == Post.channel_id)
+            .where(Post.created_at >= since)
+        ).all()
 
     # Посты с нулевым/отсутствующим расходом исключаем из статистики, но
     # обязательно показываем их количество: если таких много, среднее по
@@ -110,6 +120,43 @@ def token_economics(
                 "Либо постов ещё не генерировали, либо период слишком короткий."
             ),
         }
+
+    # ── Стоимость поиска в интернете ──────────────────────────────────
+    # Отвечает на вопрос «во сколько обходится поиск»: он и раздувает
+    # входящие токены (выдача подкладывается в промпт), и стоит отдельных
+    # денег как запрос к Search API.
+    def _stats(vals):
+        vals = sorted(v for v in vals if v)
+        if not vals:
+            return None
+        return {
+            "posts": len(vals),
+            "avg_tokens": int(round(sum(vals) / len(vals))),
+            "median_tokens": _percentile(vals, 0.5),
+            "p90_tokens": _percentile(vals, 0.9),
+        }
+
+    with_search = _stats([t for ws, t in search_rows if ws])
+    without_search = _stats([t for ws, t in search_rows if not ws])
+    web_search = {"with_search": with_search, "without_search": without_search}
+    if with_search and without_search:
+        diff = with_search["avg_tokens"] - without_search["avg_tokens"]
+        web_search["extra_tokens_per_post"] = diff
+        web_search["extra_pct"] = round(diff / without_search["avg_tokens"] * 100, 1)
+    else:
+        web_search["note"] = (
+            "Для сравнения нужны посты обеих групп: и с включённым поиском, и с "
+            "выключенным. Сейчас есть только одна группа."
+        )
+    # Сам запрос к Search API токенами не оплачивается -- он тарифицируется
+    # отдельно, поштучно. Цену берём из биллинга Yandex Cloud (SKU «Дневные/
+    # Ночные синхронные текстовые запросы»), в токенах её не видно вовсе.
+    web_search["search_api_note"] = (
+        "Запросы к Search API тарифицируются отдельно от токенов: ~0.49 ₽ за запрос днём "
+        "и ~0.37 ₽ ночью (488 и 366 ₽ за 1000). На пост приходится один запрос. "
+        "Эти деньги НЕ входят в цифры выше -- их видно только в биллинге Yandex Cloud, "
+        "строка «Yandex AI Studio. Search API»."
+    )
 
     total = sum(values)
     avg = total / n
@@ -143,6 +190,7 @@ def token_economics(
             "max": values[-1],
         },
         "tokens_total": total,
+        "web_search": web_search,
         # Оценка, зашитая в интерфейсе и оферте -- проверяем, не разошлась ли
         # она с реальностью. Если разошлась, это надо чинить в текстах.
         "declared_estimate": {
