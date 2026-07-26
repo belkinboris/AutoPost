@@ -148,6 +148,11 @@ app.include_router(telegram_ping_router)
 app.include_router(llm_compare_router)
 app.include_router(user_journeys_router)
 
+# Live-лента событий для Growth Agent (кнопка/команда /live). Модуль был
+# написан раньше, но роутер не был подключён — endpoint возвращал 404.
+from internal_user_events import router as user_events_router
+app.include_router(user_events_router)
+
 # ── Авторизация ───────────────────────────────────────────────
 
 def current_user(authorization: str = Header(default="")) -> User:
