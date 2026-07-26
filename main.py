@@ -1208,9 +1208,11 @@ def get_subscription(user: User = Depends(current_user)):
             ).order_by(Subscription.created_at.desc())
         ).first()
         if not sub:
-            return {"subscription": None}
+            return {"subscription": None, "payment_method": None}
         pkg = config.package_by_id(sub.package_id) or {}
-        return {"subscription": {
+        return {"payment_method": ({
+            "title": sub.payment_method_title or "Сохранённый способ оплаты",
+        } if sub.payment_method_id else None), "subscription": {
             "status": sub.status,
             "package_id": sub.package_id,
             "title": pkg.get("title", sub.package_id),
@@ -1316,6 +1318,7 @@ def _activate_subscription(s, pay: Payment, yk_payment: dict) -> None:
                 sub.price_rub = pay.rub
             if method_id:
                 sub.payment_method_id = method_id
+                sub.payment_method_title = billing.describe_payment_method(yk_payment)
             sub.next_charge_at = next_charge
             sub.fail_count = 0
             sub.last_error = ""
@@ -1326,6 +1329,7 @@ def _activate_subscription(s, pay: Payment, yk_payment: dict) -> None:
                 package_id=pay.package_id,
                 price_rub=pay.rub,
                 payment_method_id=method_id,
+                payment_method_title=billing.describe_payment_method(yk_payment),
                 status="active",
                 period_no=1,
                 next_charge_at=next_charge,
