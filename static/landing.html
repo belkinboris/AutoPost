@@ -26,10 +26,10 @@
     "operatingSystem": "Web, Telegram",
     "description": "ИИ-сервис для ведения Телеграм-канала: анализ стиля, генерация постов, источники и публикация по расписанию.",
     "offers": [
-      {"@type": "Offer", "price": "990", "priceCurrency": "RUB", "name": "Старт"},
-      {"@type": "Offer", "price": "2490", "priceCurrency": "RUB", "name": "Про"},
-      {"@type": "Offer", "price": "7990", "priceCurrency": "RUB", "name": "Бизнес"},
-      {"@type": "Offer", "price": "14990", "priceCurrency": "RUB", "name": "Агентство"}
+      {"@type": "Offer", "price": "490", "priceCurrency": "RUB", "name": "Старт"},
+      {"@type": "Offer", "price": "990", "priceCurrency": "RUB", "name": "Про"},
+      {"@type": "Offer", "price": "2490", "priceCurrency": "RUB", "name": "Бизнес"},
+      {"@type": "Offer", "price": "4990", "priceCurrency": "RUB", "name": "Агентство"}
     ]
   }
   </script>
@@ -82,7 +82,7 @@
           <p>В новостях легко увидеть только сумму сделки. Но важнее другое: кто покупает, зачем сейчас и какой сигнал это даёт рынку.</p>
           <p>АвтоПост берёт источник, сохраняет тон канала и превращает факт в короткий пост с выводом.</p>
         </div>
-        <div class="status-row"><span class="dot-label"><i></i>Публикация после подтверждения</span><span class="timer-label">⏱ через 30 мин</span></div>
+        <div class="status-row"><span class="dot-label"><i></i>Вы подтверждаете каждый пост</span><span class="timer-label">⏱ через 30 мин</span></div>
       </div>
     </section>
 
@@ -139,14 +139,16 @@
         <h2>Тарифы</h2>
         <p>Начните бесплатно — вам доступно несколько пробных постов, чтобы проверить, как АвтоПост пишет именно для вашего канала. Платный тариф нужен только когда захотите больше постов.</p>
       </div>
+      <p class="pricing-note">Цены на время запуска: пока сервис в раннем доступе, тарифы держим ниже обычных.</p>
       <div class="pricing">
-        <article><h3>Старт</h3><div class="price">990 ₽/мес</div><p>1 200 000 токенов<br>1 канал<br>30–60 постов</p><a class="btn primary" href="/" onclick="trackGoal('tariff_start')">Выбрать</a></article>
-        <article class="popular"><div class="badge">Популярный</div><h3>Про</h3><div class="price">2 490 ₽/мес</div><p>3 000 000 токенов<br>3 канала<br>75–150 постов</p><a class="btn primary" href="/" onclick="trackGoal('tariff_pro')">Выбрать</a></article>
-        <article><h3>Бизнес</h3><div class="price">7 990 ₽/мес</div><p>10 000 000 токенов<br>10 каналов<br>250–500 постов</p><a class="btn primary" href="/" onclick="trackGoal('tariff_business')">Выбрать</a></article>
-        <article><h3>Агентство</h3><div class="price">14 990 ₽/мес</div><p>20 000 000 токенов<br>много каналов<br>500–1000 постов</p><a class="btn primary" href="/" onclick="trackGoal('tariff_agency')">Выбрать</a></article>
+        <article><h3>Старт</h3><div class="price-regular">потом 990 ₽</div><div class="price">490 ₽/мес</div><p>600 000 токенов<br>1 канал<br>15–30 постов</p><a class="btn primary" href="/" onclick="trackGoal('tariff_start')">Выбрать</a></article>
+        <article class="popular"><div class="badge">Популярный</div><h3>Про</h3><div class="price-regular">потом 1 990 ₽</div><div class="price">990 ₽/мес</div><p>1 200 000 токенов<br>3 канала<br>30–60 постов</p><a class="btn primary" href="/" onclick="trackGoal('tariff_pro')">Выбрать</a></article>
+        <article><h3>Бизнес</h3><div class="price-regular">потом 4 990 ₽</div><div class="price">2 490 ₽/мес</div><p>3 000 000 токенов<br>10 каналов<br>75–150 постов</p><a class="btn primary" href="/" onclick="trackGoal('tariff_business')">Выбрать</a></article>
+        <article><h3>Агентство</h3><div class="price-regular">потом 9 990 ₽</div><div class="price">4 990 ₽/мес</div><p>6 000 000 токенов<br>много каналов<br>150–300 постов</p><a class="btn primary" href="/" onclick="trackGoal('tariff_agency')">Выбрать</a></article>
       </div>
       <div class="trust-bar" style="margin:28px 0 0">
-        <p>💰 Для сравнения: ведение канала SMM-специалистом стоит от 30 000 ₽/мес за 8–20 постов. Тариф Старт — 990 ₽/мес за 30–60 постов.</p>
+        <p>💰 Для сравнения: ведение канала SMM-специалистом стоит от 30 000 ₽/мес за 8–20 постов. Тариф Старт — 490 ₽/мес за 15–30 постов.</p>
+        <p style="margin-top:8px" id="sub_note" hidden>Тарифы работают как подписка: оплата списывается автоматически раз в 30 дней, отменить подписку и отвязать карту можно в любой момент в личном кабинете.</p>
       </div>
     </section>
 
@@ -273,5 +275,13 @@
 
     logLandingEvent('landing_view');
   </script>
+<script>
+  // Строку про регулярные списания показываем ТОЛЬКО когда рекуррент реально
+  // включён на сервере. Обещать автосписание, которого нет (ЮKassa ещё не
+  // согласовала опцию), нельзя -- как и умолчать о нём, когда оно есть.
+  fetch("/api/config").then(r=>r.json()).then(c=>{
+    if(c && c.subscription_enabled){ const el=document.getElementById("sub_note"); if(el) el.hidden=false; }
+  }).catch(function(){});
+</script>
 </body>
 </html>

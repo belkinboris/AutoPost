@@ -242,6 +242,21 @@ input:checked + .slider:before { transform: translateX(18px); }
 .post-card { background: var(--surface); border: 1px solid var(--border-soft);
   border-radius: var(--radius); padding: 20px; margin-bottom: 12px; box-shadow: var(--shadow); }
 .post-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+/* Пустой слот очереди: показывает, сколько постов система держит наготове,
+   и даёт создать пост, не дожидаясь расписания. */
+/* Стартовые цены: зачёркнутая цена -- БУДУЩАЯ («потом»), не прошлая. */
+.p-regular { font-size: 13px; color: var(--text-faint); text-decoration: line-through;
+  text-decoration-color: var(--accent); margin-bottom: 2px; }
+.promo-bar { background: var(--accent-soft); border-radius: var(--radius);
+  padding: 12px 16px; margin-bottom: 16px; font-size: 13px; line-height: 1.6;
+  color: var(--text-dim); }
+.promo-bar b { color: var(--accent-dark); }
+
+.queue-slot { border: 1px dashed var(--border); border-radius: var(--radius);
+  padding: 20px; margin-bottom: 12px; text-align: center; background: transparent; }
+.queue-slot-muted { opacity: .55; }
+.queue-slot-hint { font-size: 13px; color: var(--text-faint); margin-top: 6px; }
+.queue-slot-muted .queue-slot-hint { margin-top: 0; }
 .post-body { background: var(--surface2); border: 1px solid var(--border-soft);
   border-radius: 10px; padding: 14px; white-space: pre-wrap; font-size: 14px;
   line-height: 1.7; color: var(--text); min-height: 80px; }

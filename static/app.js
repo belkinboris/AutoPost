@@ -458,6 +458,14 @@ function _intervalLabel(h){
 }
 function _nextGenerationLabel(c){
   if(c.enabled===false) return "на паузе";
+  // КРИТИЧНО (фикс противоречия): резерв очереди догенерируется на ближайшем
+  // тике планировщика (раз в минуту), а НЕ по интервалу расписания -- см.
+  // _refill_if_active в tasks.py. Пока очередь не заполнена до min_queue,
+  // честный ответ "в ближайшие минуты". Раньше здесь всегда считался
+  // интервал, и шапка канала обещала "через 12ч" ровно в тот момент, когда
+  // пост на самом деле появлялся через минуту.
+  const minQueue=c.queue_target||App.cfg?.min_queue||3;
+  if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
   // Время следующей ГЕНЕРАЦИИ (не публикации!) = последняя генерация + интервал,
   // но не в прошлом. Публикация — отдельное понятие, происходит либо по явному
   // подтверждению пользователя, либо для scheduled-постов (см. renderPostCard).
@@ -574,7 +582,7 @@ function renderChanCard(c){
     statusLabel="Автоматическая публикация"; dotClass="status-dot-green";
     subLine=c.enabled===false?"На паузе":`⏱ Следующая генерация ${_nextGenerationLabel(c)}`;
   } else {
-    statusLabel="Публикация после подтверждения"; dotClass="status-dot-accent";
+    statusLabel="Вы подтверждаете каждый пост"; dotClass="status-dot-accent";
     subLine=c.enabled===false?"На паузе":`⏱ Следующая генерация ${_nextGenerationLabel(c)}`;
   }
 
@@ -1774,7 +1782,7 @@ async function renderChannel(){
   } else if(c.auto_publish){
     statusLabel="Автоматическая публикация"; dotClass="status-dot-green";
   } else {
-    statusLabel="Публикация после подтверждения"; dotClass="status-dot-accent";
+    statusLabel="Вы подтверждаете каждый пост"; dotClass="status-dot-accent";
   }
   const subLine=c.enabled===false?"На паузе":(connected?`⏱ Следующая генерация ${_nextGenerationLabel(c)}`:"");
 
@@ -1890,9 +1898,26 @@ function renderPostCard(p, pubMs, channelEnabled){
     // была ветка, которая путала "канал настроен на автопубликацию по
     // расписанию" с "этот конкретный пост скоро опубликуется" — это и
     // создавало конфликт "Ждёт подтверждения" + синий таймер одновременно.
-    statusPill=`<div class="status-pill status-pill-yellow">Ждёт вашего подтверждения</div>`;
+    //
+    // Обещание про автопубликацию показываем ТОЛЬКО если у поста реально
+    // заведён дедлайн (PostApproval). Такой таймер есть лишь у постов
+    // регулярной генерации по расписанию; посты из онбординга, созданные
+    // вручную и догенерация резерва очереди идут с force_pending=True и сами
+    // не опубликуются никогда (см. tasks.py). Раньше очередь обещала
+    // "опубликуется сам через 30 мин" на уровне всего канала — то есть всем
+    // постам подряд, включая те, у которых никакого таймера нет.
     const created=new Date(p.created_at+"Z").toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
-    subLine=`<div class="status-subline">Создан ${created}</div>`;
+    if(p.approval_deadline){
+      const dl=new Date(p.approval_deadline).getTime();
+      const diff=dl-Date.now();
+      const mm=Math.max(0,Math.floor(diff/60000)),ss=Math.max(0,Math.floor((diff%60000)/1000));
+      const label=diff>0?`⏱ через ${mm}:${String(ss).padStart(2,"0")}, если не подтвердите`:"⏱ публикуется…";
+      statusPill=`<div class="status-pill status-pill-yellow" data-approval-countdown="${dl}">${label}</div>`;
+      subLine=`<div class="status-subline">Не отреагируете — опубликуем этот пост сами</div>`;
+    } else {
+      statusPill=`<div class="status-pill status-pill-yellow">Ждёт вашего решения</div>`;
+      subLine=`<div class="status-subline">Создан ${created} · сам не опубликуется</div>`;
+    }
   }
 
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────
@@ -2061,29 +2086,30 @@ function renderQueueBody(){
   const history=posts.filter(p=>p.status==="published"||p.status==="rejected");
   const c=App._chan;
 
-  // Пояснительный блок про автопубликацию (task item D) — снимает путаницу
-  // между "пост ждёт подтверждения" и "пост скоро опубликуется сам".
-  const softControlMin = App.cfg?.soft_control_minutes || 30;
-  const autoPublishInfo = c.auto_publish
-    ? `<div class="card" style="background:var(--blue-bg);border:none;margin-bottom:14px;padding:14px 16px">
-        <div style="font-size:13px;color:var(--blue);font-weight:600">Автоматическая публикация</div>
-        <div style="font-size:13px;color:var(--text-dim);margin-top:2px">Посты будут выходить по расписанию ${_intervalLabel(c.interval_hours||12)}.</div>
-        <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--blue)" onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)">Изменить</button>
-      </div>`
-    : `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
-        <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Публикация после подтверждения</div>
-        <div style="font-size:13px;color:var(--text-dim);margin-top:2px">${App.user?.tg_chat_id
-          ? `Новый пост присылаем вам в Telegram с кнопками. Опубликуется сам через ${softControlMin} мин, если не отреагируете.`
-          : `Подтвердить или отклонить можно прямо здесь, в очереди. Опубликуется сам через ${softControlMin} мин, если не отреагируете. Подключите уведомления в Telegram, чтобы подтверждать с телефона, не заходя на сайт.`}</div>
-        <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)" onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)">Открыть настройки</button>
-      </div>`;
+  // ── Статус очереди ────────────────────────────────────────────────────
+  // Заменяет прежний абстрактный баннер «Публикация после подтверждения».
+  // Тот баннер (а) был написан канцеляритом без подлежащих («Подтвердить или
+  // отклонить» — что? «Опубликуется сам» — кто?), (б) висел всегда, даже
+  // когда ничего не требовал от пользователя, и (в) обещал «опубликуется сам
+  // через 30 мин» на уровне всего канала, хотя таймер реально заводится
+  // только у постов регулярной генерации по расписанию — посты из
+  // онбординга, ручные и догенерация резерва очереди идут с
+  // force_pending=True и таймера не имеют вовсе (см. tasks.py).
+  // Теперь здесь только факты о состоянии очереди, а обещание про таймер
+  // переехало на конкретную карточку поста, у которой этот таймер есть.
+  // Цель по глубине очереди приходит с канала (зависит от оплаты владельца),
+  // App.cfg.min_queue -- только фолбэк для старого закэшированного фронта.
+  const minQueue = c.queue_target || App.cfg?.min_queue || 3;
+  const connected = !!(c.tg_chat && c.verified);
+  const paused = c.enabled === false;
+  const queueStatus = _renderQueueStatus(c, pending.length, {minQueue, connected, paused});
 
   const viewToggle=`<div style="display:flex;gap:8px;margin-bottom:14px">
     <button class="btn-sm ${_queueViewMode==="list"?"btn":"btn-outline"}" onclick="setQueueViewMode('list')">📋 Список</button>
     <button class="btn-sm ${_queueViewMode==="calendar"?"btn":"btn-outline"}" onclick="setQueueViewMode('calendar')">🗓 Календарь</button>
   </div>`;
 
-  let html=autoPublishInfo+viewToggle;
+  let html=queueStatus+viewToggle;
 
   if(_queueViewMode==="calendar"){
     html+=renderQueueCalendar(posts);
@@ -2091,23 +2117,13 @@ function renderQueueBody(){
     return;
   }
 
-  if(!pending.length){
-    const paused = c && !c.enabled;
-    // КРИТИЧНО (fix): для неподключённого канала tick() вообще не
-    // генерирует посты (см. tasks.py: генерация идёт только для
-    // channel.verified==True) -- "посты скоро появятся автоматически"
-    // было прямой ложью в этом состоянии, ничего не появится, пока канал
-    // не подключат, сколько бы ни ждали.
-    const notConnected = c && !(c.tg_chat && c.verified);
-    if(paused){
-      html+=`<div class="empty"><div class="empty-icon">⏸</div><h3>Канал на паузе</h3><p>При возобновлении автоматически сгенерируются 3 поста.</p></div>`;
-    } else if(notConnected){
-      html+=`<div class="empty"><div class="empty-icon">📡</div><h3>Канал ещё не подключён</h3><p>Посты начнут генерироваться автоматически, как только подключите канал к Telegram.</p>
-        <button class="btn btn-sm" style="margin-top:10px" onclick="setTab('settings')">Подключить →</button>
-      </div>`;
-    } else {
-      html+=`<div class="empty"><div class="empty-icon">✦</div><h3>Очередь пуста</h3><p>Посты скоро появятся автоматически.</p></div>`;
-    }
+  if(paused){
+    // На паузе tick() не генерирует и не публикует ничего -- предлагать здесь
+    // ручную генерацию было бы обманом ожиданий (пост создастся, но так и
+    // будет лежать), поэтому единственное осмысленное действие -- снять паузу.
+    html+=`<div class="empty"><div class="empty-icon">⏸</div><h3>Канал на паузе</h3>
+      <p>Новые посты не создаются и не публикуются, пока канал на паузе.</p></div>`;
+    html+=pending.map(p=>renderPostCard(p, p.scheduled_at?new Date(p.scheduled_at+"Z").getTime():null, c.enabled)).join("");
   } else {
     html+=pending.map((p)=>{
       // КРИТИЧНО (фикс путаницы из задачи): pubMs передаём ТОЛЬКО для
@@ -2120,6 +2136,11 @@ function renderQueueBody(){
       const pubMs=p.scheduled_at?new Date(p.scheduled_at+"Z").getTime():null;
       return renderPostCard(p, pubMs, c.enabled);
     }).join("");
+    // Пустые слоты-заглушки до minQueue: показывают, сколько постов система
+    // вообще держит наготове (раньше это число нигде не было видно, и понять
+    // "сколько постов должно быть в очереди" было невозможно), и дают явный
+    // способ создать пост прямо сейчас, не уходя в настройки.
+    html+=_renderQueueSlots(pending.length, minQueue);
   }
   if(history.length){
     html+=`<div style="margin-top:20px">
@@ -2132,6 +2153,147 @@ function renderQueueBody(){
   }
   $("postList").innerHTML=html;
   startNearestCountdown();
+  // Тикает все карточки с реальным дедлайном автопубликации (см.
+  // data-approval-countdown в renderPostCard). Функция сама выходит, если
+  // таких карточек на экране нет.
+  startDashboardCountdowns();
+  _scheduleApprovalRefresh(pending);
+}
+
+// Когда ближайший дедлайн автопубликации истекает, пост публикуется на
+// сервере (tick) -- перечитываем очередь, чтобы карточка не осталась висеть
+// в состоянии "публикуется…" до следующего ручного захода на вкладку.
+let _approvalRefreshTimer=null;
+function _scheduleApprovalRefresh(pending){
+  if(_approvalRefreshTimer){clearTimeout(_approvalRefreshTimer);_approvalRefreshTimer=null;}
+  const deadlines=pending
+    .filter(p=>p.approval_deadline)
+    .map(p=>new Date(p.approval_deadline).getTime())
+    .filter(ms=>ms>Date.now());
+  if(!deadlines.length) return;
+  const soonest=Math.min(...deadlines);
+  _approvalRefreshTimer=setTimeout(()=>{
+    if(App.tab==="queue") renderQueue();
+  }, (soonest-Date.now())+8000);
+}
+
+// ── Статус очереди: что происходит прямо сейчас ───────────────────────
+// Отвечает на три вопроса, на которые интерфейс раньше не отвечал вообще:
+// сколько постов в очереди, когда появится следующий и что вообще будет с
+// готовым постом. Формулировки — с явными подлежащими, без канцелярита.
+function _renderQueueStatus(c, pendingCount, opts){
+  const {minQueue, connected, paused} = opts;
+  const counter = `<b>${pendingCount}</b> из ${minQueue}`;
+  const settingsLink = `onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)"`;
+
+  if(paused){
+    return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;font-weight:600">Канал на паузе</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">Пока канал на паузе, новые посты не создаются и ничего не публикуется. В очереди ${counter}.</div>
+    </div>`;
+  }
+
+  if(!connected){
+    // Главный фикс: раньше это объяснение показывалось ТОЛЬКО при пустой
+    // очереди. У пользователя с одним постом из онбординга (типичный случай:
+    // канал создан, Telegram ещё не подключён) на экране не было вообще
+    // ничего, что объясняло бы, почему второй пост так и не появился.
+    //
+    // Сознательно НЕ повторяем здесь заголовок "Канал не подключён" и кнопку
+    // "Подключить" -- баннер прямо над вкладками уже говорит ровно это (см.
+    // renderChannel). Тут только то, чего там нет: что происходит с очередью.
+    return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Новые посты пока не создаются</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+        В очереди ${counter}. Сами по расписанию посты начнут появляться после подключения канала.
+        А написать пост можно прямо сейчас — кнопкой ниже.
+      </div>
+    </div>`;
+  }
+
+  if(c.auto_publish){
+    return `<div class="card" style="background:var(--blue-bg);border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--blue);font-weight:600">Автопилот включён</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+        Мы сами пишем и публикуем посты — ${_intervalLabel(c.interval_hours||12)}. Подтверждать ничего не нужно. В очереди ${counter}.
+      </div>
+      <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--blue)" ${settingsLink}>Изменить</button>
+    </div>`;
+  }
+
+  // Режим "ничего не выходит без решения пользователя".
+  const softControlMin = App.cfg?.soft_control_minutes || 30;
+  const refillLine = pendingCount < minQueue
+    ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
+    : `Очередь заполнена. Как только опубликуете один пост, мы подготовим следующий.`;
+
+  return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
+    <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Вы решаете, что публиковать</div>
+    <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+      В очереди ${counter}. Ни один пост не попадёт в канал, пока вы не нажмёте «Опубликовать». ${refillLine}
+    </div>
+    <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
+      onclick="toggleQueueHelp()" id="queue_help_btn">Подробнее ▾</button>
+    <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
+      Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>
+      У поста, написанного по расписанию, есть обратный отсчёт: если вы не отреагируете за ${softControlMin} мин, мы опубликуем его сами. Такой пост видно по таймеру на карточке.<br>
+      Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>
+      ${App.user?.tg_chat_id
+        ? `Мы дублируем такие посты вам в Telegram — можно решать с телефона, не заходя на сайт.`
+        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Telegram</a>, чтобы решать с телефона, не заходя на сайт.`}
+      <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)" ${settingsLink}>Открыть настройки</button>
+    </div>
+  </div>`;
+}
+
+function toggleQueueHelp(){
+  const el=$("queue_help"), btn=$("queue_help_btn");
+  if(!el) return;
+  const hidden=el.classList.contains("hidden");
+  el.classList.toggle("hidden",!hidden);
+  if(btn) btn.textContent=hidden?"Свернуть ▴":"Подробнее ▾";
+}
+
+// Пустые слоты до minQueue. Делают видимой саму норму «сколько постов должно
+// быть наготове» и дают явную кнопку создать пост сейчас, вместо того чтобы
+// гадать, когда он появится сам.
+function _renderQueueSlots(pendingCount, minQueue){
+  const missing = Math.max(0, minQueue - pendingCount);
+  if(!missing) return "";
+  // Рисуем не больше трёх заглушек: у оплатившего цель очереди 7, и при одном
+  // готовом посте шесть пунктирных рамок подряд превратили бы экран в забор.
+  // Точное число недостающих постов и так названо словами в статусе выше.
+  const shown = Math.min(missing, 3);
+  let out = "";
+  for(let i=0;i<shown;i++){
+    out += i===0
+      ? `<div class="queue-slot">
+           <button class="btn-outline btn-sm" id="queue_gen_btn" onclick="genQueuePost()">+ Написать пост сейчас</button>
+           <div class="queue-slot-hint">Не дожидаясь расписания</div>
+         </div>`
+      : `<div class="queue-slot queue-slot-muted"><div class="queue-slot-hint">Место для ещё одного поста</div></div>`;
+  }
+  return out;
+}
+
+let _genQueueInFlight=false;
+async function genQueuePost(){
+  if(!requireAuth()) return;
+  if(_genQueueInFlight) return;
+  _genQueueInFlight=true;
+  const btn=$("queue_gen_btn");
+  if(btn){btn.innerHTML='<span class="spinner"></span> Пишу пост…';btn.disabled=true;}
+  try{
+    await api("POST","/channels/"+App._chan.id+"/generate",{});
+    trackGoal("post_generated",{source:"queue_slot",channel_id:App._chan.id});
+    toast("Пост готов ✓","ok");
+    await renderQueue();
+  }catch(e){
+    toast(e&&e.message?e.message:"Ошибка запроса","err");
+    if(btn){btn.innerHTML="+ Написать пост сейчас";btn.disabled=false;}
+  }finally{
+    _genQueueInFlight=false;
+  }
 }
 
 // ── КАЛЕНДАРЬ (task item: вид очереди по датам) ────────────────────────
@@ -2677,26 +2839,35 @@ async function generateNow(){
 async function renderBilling(){
   await refreshUser();
   logProductEvent("pricing_viewed");
+  try{ App._subscription=(await api("GET","/subscription")).subscription; }
+  catch(_){ App._subscription=null; }
   const plans=[
-    {id:"p1",name:"Старт",price:"990 ₽/мес",channels:1,postsMin:30,postsMax:60},
-    {id:"p2",name:"Про",price:"2 490 ₽/мес",channels:3,postsMin:75,postsMax:150,popular:true},
-    {id:"p3",name:"Бизнес",price:"7 990 ₽/мес",channels:10,postsMin:250,postsMax:500},
-    {id:"p4",name:"Агентство",price:"14 990 ₽/мес",channels:0,postsMin:500,postsMax:1000},
+    {id:"p1",name:"Старт",price:490,regular:990,channels:1,postsMin:15,postsMax:30},
+    {id:"p2",name:"Про",price:990,regular:1990,channels:3,postsMin:30,postsMax:60,popular:true},
+    {id:"p3",name:"Бизнес",price:2490,regular:4990,channels:10,postsMin:75,postsMax:150},
+    {id:"p4",name:"Агентство",price:4990,regular:9990,channels:0,postsMin:150,postsMax:300},
   ];
+  const sub=App._subscription||null;
   $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap">
     <div class="page-head"><h1>Тарифы</h1>
       <p>Осталось <b>${Math.floor((App.user?.token_balance||0)/40000)}–${Math.floor((App.user?.token_balance||0)/20000)}</b> постов.<br>
       <span style="font-size:13px;color:var(--text-faint)">Диапазон зависит от сложности: пост с поиском свежих новостей расходует больше, простой — меньше.</span></p></div>
     ${(!App.cfg?.yookassa_enabled&&!App.cfg?.yoomoney_enabled)?`<div class="card" style="border-color:var(--accent);background:var(--accent-soft);margin-bottom:16px">
       <p style="color:var(--accent-dark)">Приём платежей настраивается.</p></div>`:""}
+    ${_subscriptionCard(sub)}
+    ${plans.some(p=>p.regular)?`<div class="promo-bar">
+      <b>Цены на время запуска.</b> Сервис ещё развивается — пока он в раннем доступе, тарифы держим ниже
+      обычных.${App.cfg?.subscription_enabled?" Цена, по которой вы подписались, за вами сохранится.":""}
+    </div>`:""}
     <div class="grid grid-2" style="margin-bottom:16px">
       ${plans.map(p=>`<div class="price-card" style="position:relative;${p.popular?"border-color:var(--accent)":""}">
         ${p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
         <div class="p-name">${p.name}</div>
-        <div class="p-price" style="font-size:24px">${p.price}</div>
+        ${p.regular?`<div class="p-regular">потом ${_rub(p.regular)} ₽</div>`:""}
+        <div class="p-price" style="font-size:24px">${_rub(p.price)}\u00A0₽${App.cfg?.subscription_enabled?"/мес":""}</div>
         <div class="p-tokens" style="line-height:1.8">
-          📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${p.channels===1?"канал":"канала"}`}<br>
-          ✦ ${p.postsMin}–${p.postsMax} постов/мес</div>
+          📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${_plural(p.channels,"канал","канала","каналов")}`}<br>
+          ✦ ${p.postsMin}–${p.postsMax} постов${App.cfg?.subscription_enabled?"/мес":""}</div>
         <button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>
       </div>`).join("")}
     </div>
@@ -2761,8 +2932,93 @@ function togglePayHistory(){
   if(hidden && window._loadPayHistory) window._loadPayHistory();
 }
 
+// 1290 -> "1 290" (неразрывный пробел, чтобы цена не переносилась)
+function _rub(n){ return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
+
+// Русское склонение по числу: 1 канал / 2 канала / 10 каналов.
+function _plural(n, one, few, many){
+  const a=Math.abs(n)%100, b=a%10;
+  if(a>10&&a<20) return many;
+  if(b>1&&b<5) return few;
+  if(b===1) return one;
+  return many;
+}
+
+function _subscriptionCard(sub){
+  const days=App.cfg?.subscription_period_days||30;
+  if(!sub){
+    // Пока рекуррент не согласован с ЮKassa, обещать автосписание нельзя --
+    // его не будет. Тогда это честная разовая оплата пакета.
+    if(!App.cfg?.subscription_enabled){
+      return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:16px;padding:14px 16px">
+        <div style="font-size:13px;color:var(--text-dim);line-height:1.6">
+          Оплата разовая: списываем один раз и сразу начисляем посты. Ничего не спишется автоматически —
+          когда посты закончатся, просто оплатите снова.
+        </div></div>`;
+    }
+    // Честно предупреждаем о характере платежа до того, как человек нажмёт
+    // «Выбрать», а не только в момент подтверждения.
+    return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:16px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--text-dim);line-height:1.6">
+        Тарифы — это подписка: плата списывается автоматически раз в ${days} дней, пока вы её не отмените.
+        Отменить подписку и отвязать карту можно в любой момент здесь же, деньги за оплаченный период не сгорают.
+      </div></div>`;
+  }
+  const when=sub.next_charge_at
+    ? new Date(sub.next_charge_at).toLocaleDateString("ru-RU",{day:"numeric",month:"long",year:"numeric"})
+    : "—";
+  if(sub.status==="suspended"){
+    return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:16px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Подписка «${esc(sub.title)}» приостановлена</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+        Списать оплату не получилось. Автосписания остановлены — выберите тариф ниже, чтобы возобновить подписку.
+      </div>
+      <button class="btn-ghost btn-sm" style="margin-top:8px;padding:4px 0;color:var(--accent-dark)" onclick="cancelSubscription()">Отменить подписку и отвязать карту</button>
+    </div>`;
+  }
+  return `<div class="card" style="background:var(--green-bg,var(--surface2));border:none;margin-bottom:16px;padding:14px 16px">
+    <div style="font-size:13px;font-weight:600">Подписка «${esc(sub.title)}» активна</div>
+    <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+      Следующее списание ${sub.rub?`${sub.rub} ₽ `:""}— ${when} Дальше каждые ${days} дней, пока не отмените.
+    </div>
+    <button class="btn-ghost btn-sm" style="margin-top:8px;padding:4px 0;color:var(--red,#c0392b)" onclick="cancelSubscription()">Отменить подписку и отвязать карту</button>
+  </div>`;
+}
+
+async function cancelSubscription(){
+  if(!confirm(
+    "Отменить подписку и отвязать карту?\n\n"+
+    "Автосписания прекратятся, сохранённый способ оплаты будет удалён — "+
+    "списать по нему больше не сможем.\n\n"+
+    "Оплаченный период и уже начисленные посты останутся при вас."
+  )) return;
+  try{
+    await api("DELETE","/subscription");
+    logProductEvent("subscription_cancelled");
+    toast("Подписка отменена","ok");
+    renderBilling();
+  }catch(e){
+    toast(e&&e.message?e.message:"Не удалось отменить подписку","err");
+  }
+}
+
 async function buy(pid){
   logProductEvent("payment_cta_clicked", pid);
+  // Регулярное списание обязано быть раскрыто ДО оплаты, явно и своими
+  // словами -- человек должен понимать, что подписывается на повторяющийся
+  // платёж, а не платит один раз. Отмена тут же названа, чтобы это не
+  // выглядело ловушкой.
+  const plan=(App.cfg?.packages||[]).find(p=>p.id===pid);
+  const days=App.cfg?.subscription_period_days||30;
+  if(plan && App.cfg?.subscription_enabled){
+    const ok=confirm(
+      `Тариф «${plan.title}» — ${plan.rub} ₽ каждые ${days} дней.\n\n`+
+      `Первый платёж спишется сейчас, дальше — автоматически раз в ${days} дней, `+
+      `пока вы не отмените подписку.\n\n`+
+      `Отменить и отвязать карту можно в любой момент на этой же странице.`
+    );
+    if(!ok){ logProductEvent("payment_declined_at_confirm", pid); return; }
+  }
   try{
     const r = await api("POST", "/billing/buy", {package_id: pid});
     trackGoal("payment_started",{package_id:pid});

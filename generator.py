@@ -317,6 +317,31 @@ async def _call_yandex(system, messages, max_tokens=700):
                         text = "\n".join(parts)
                     usage = data.get("usage") or {}
                     tokens = int(usage.get("total_tokens") or usage.get("output_tokens", 0) or 0)
+                    # Диагностика себестоимости: без этого нельзя ответить на
+                    # вопрос "сколько реально стоит пост". Отдельно логируем
+                    # reasoning-токены -- у DeepSeek "режим размышлений" включён
+                    # по умолчанию, и выше мы пытаемся его отключить
+                    # (thinking: disabled). Работает ли это отключение на
+                    # стороне Яндекса, видно только по этой цифре: если
+                    # reasoning_tokens стабильно 0 -- отключение сработало,
+                    # если нет -- мы платим за невидимые токены на каждой
+                    # генерации, и max_output_tokens с запасом +8000 их
+                    # оплачивает.
+                    _out_details = usage.get("output_tokens_details") or {}
+                    _reasoning = int(_out_details.get("reasoning_tokens", 0) or 0)
+                    logger.info(
+                        "[llm-usage] model=%s input=%s output=%s reasoning=%s total=%s",
+                        config.YANDEX_MODEL_URI,
+                        usage.get("input_tokens"),
+                        usage.get("output_tokens"),
+                        _reasoning,
+                        tokens or None,
+                    )
+                    if not usage:
+                        logger.warning(
+                            "[llm-usage] провайдер не вернул usage -- расход этого вызова "
+                            "не будет учтён нигде (tokens_used=0)"
+                        )
                     if not text:
                         raise KeyError("empty output_text")
                     inc = (data.get("incomplete_details") or {}).get("reason")

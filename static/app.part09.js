@@ -178,7 +178,7 @@ async function renderChannel(){
   } else if(c.auto_publish){
     statusLabel="Автоматическая публикация"; dotClass="status-dot-green";
   } else {
-    statusLabel="Публикация после подтверждения"; dotClass="status-dot-accent";
+    statusLabel="Вы подтверждаете каждый пост"; dotClass="status-dot-accent";
   }
   const subLine=c.enabled===false?"На паузе":(connected?`⏱ Следующая генерация ${_nextGenerationLabel(c)}`:"");
 

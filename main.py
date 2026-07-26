@@ -8,7 +8,7 @@ import logging
 import secrets
 import string
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import uvicorn
 from fastapi import FastAPI, Depends, HTTPException, Request, Header, BackgroundTasks
@@ -89,6 +89,15 @@ async def lifespan(app: FastAPI):
             tasks.poll_main_bot, "interval", seconds=config.MAIN_BOT_POLL_SECONDS,
             id="main_bot_poll", replace_existing=True, max_instances=1, coalesce=True,
         )
+        # Продление подписок. Раз в час, а не в общем tick(): списание денег --
+        # не та операция, которую стоит гонять раз в минуту, а точность до часа
+        # для месячной подписки более чем достаточна. max_instances=1 плюс
+        # детерминированный Idempotence-Key в charge_due_subscriptions
+        # исключают двойное списание при наложении запусков.
+        _scheduler.add_job(
+            tasks.charge_due_subscriptions, "interval", hours=1,
+            id="subscription_charges", replace_existing=True, max_instances=1, coalesce=True,
+        )
         _scheduler.start()
         logger.info(f"Планировщик запущен, тик каждые {config.TICK_SECONDS}с, /start-поллинг каждые {config.MAIN_BOT_POLL_SECONDS}с")
     yield
@@ -126,6 +135,11 @@ app.include_router(schema_diag_router)
 
 from internal_payment_path import router as payment_path_router
 app.include_router(payment_path_router)
+
+# Реальная себестоимость поста по фактическим Post.tokens_used -- чтобы цену
+# тарифов можно было проверять цифрами, а не оценкой "20-40 тысяч токенов".
+from internal_token_economics import router as token_economics_router
+app.include_router(token_economics_router)
 
 from internal_user_journeys import router as user_journeys_router
 from internal_llm_compare import router as llm_compare_router
@@ -235,6 +249,14 @@ def get_config():
         "public_url": config.PUBLIC_URL,
         "packages": config.TOKEN_PACKAGES,
         "soft_control_minutes": config.SOFT_CONTROL_APPROVAL_MINUTES,
+        # Целевая глубина очереди -- сколько готовых постов система держит
+        # наготове (tasks.MIN_QUEUE). Фронт показывает "в очереди N из M" и
+        # пустые слоты-заглушки, поэтому значение обязано приходить с сервера,
+        # а не быть захардкожено в двух местах.
+        "min_queue": tasks.MIN_QUEUE,
+        # Нужен фронту, чтобы честно назвать периодичность списания до оплаты.
+        "subscription_period_days": config.SUBSCRIPTION_PERIOD_DAYS,
+        "subscription_enabled": config.SUBSCRIPTION_ENABLED,
         "yookassa_enabled": billing.is_configured(),
         # Старый ключ оставлен для совместимости с фронтом, если браузер закэширует app.js.
         "yoomoney_enabled": billing.is_configured(),
@@ -568,6 +590,15 @@ def _channel_dict(s, ch: Channel) -> dict:
     d["queue_count"] = 0
     d["published_count"] = 0
     d["approval_deadline"] = None
+    # Целевая глубина очереди зависит от того, оплачивал ли владелец (см.
+    # tasks.queue_target_for_user), поэтому приходит здесь, а не в /api/config:
+    # тот отдаётся без авторизации и одинаков для всех.
+    d["queue_target"] = tasks.MIN_QUEUE
+    try:
+        d["queue_target"] = tasks.queue_target_for_user(s, ch.user_id)
+    except Exception:
+        logger.exception(f"_channel_dict: не удалось определить queue_target для канала {ch.id}")
+        s.rollback()
     try:
         next_post = s.exec(
             select(Post).where(Post.channel_id == ch.id, Post.status == "pending")
@@ -957,7 +988,30 @@ def list_posts(channel_id: int, user: User = Depends(current_user)):
         posts = s.exec(
             select(Post).where(Post.channel_id == channel_id).order_by(Post.created_at.desc())
         ).all()
-        return [p.model_dump() for p in posts]
+        # Дедлайн автопубликации -- ПОштучно, а не одним флагом на канал.
+        # КРИТИЧНО: таймер заводится только для постов регулярной генерации по
+        # расписанию (tick -> generate_for_channel без force_pending). Посты,
+        # созданные вручную ("Сгенерировать пост"), в онбординге и при
+        # догенерации резерва очереди (_refill_if_active), идут с
+        # force_pending=True и таймера НЕ имеют -- они ждут решения
+        # пользователя сколько угодно долго. Раньше очередь показывала общее
+        # обещание "опубликуется сам через 30 мин" на уровне всего канала, и
+        # для большинства постов это была неправда.
+        deadlines = {
+            a.post_id: a.deadline.isoformat() + "Z"
+            for a in s.exec(
+                select(PostApproval).where(
+                    PostApproval.channel_id == channel_id,
+                    PostApproval.status == "waiting",
+                )
+            ).all()
+        }
+        out = []
+        for p in posts:
+            d = p.model_dump()
+            d["approval_deadline"] = deadlines.get(p.id)
+            out.append(d)
+        return out
 
 
 @app.patch("/api/posts/{post_id}")
@@ -1129,6 +1183,7 @@ async def _sync_yookassa_pending_payments(user_id: int) -> None:
                     "Платёж YooKassa зачтён через sync: пользователь %s +%s токенов",
                     pay.user_id, pay.tokens,
                 )
+                _activate_subscription(s, pay, yk_payment)
 
 
 @app.get("/api/payments")
@@ -1141,6 +1196,156 @@ async def payments(user: User = Depends(current_user)):
         return [p.model_dump() for p in ps]
 
 
+@app.get("/api/subscription")
+def get_subscription(user: User = Depends(current_user)):
+    """Текущая подписка пользователя (или none, если её нет)."""
+    from database import Subscription
+    with session() as s:
+        sub = s.exec(
+            select(Subscription).where(
+                Subscription.user_id == user.id,
+                Subscription.status.in_(["active", "suspended"]),
+            ).order_by(Subscription.created_at.desc())
+        ).first()
+        if not sub:
+            return {"subscription": None}
+        pkg = config.package_by_id(sub.package_id) or {}
+        return {"subscription": {
+            "status": sub.status,
+            "package_id": sub.package_id,
+            "title": pkg.get("title", sub.package_id),
+            "rub": pkg.get("rub"),
+            "period_days": config.SUBSCRIPTION_PERIOD_DAYS,
+            "next_charge_at": sub.next_charge_at.isoformat() + "Z" if sub.next_charge_at else None,
+            "last_error": sub.last_error,
+        }}
+
+
+@app.delete("/api/subscription")
+def cancel_subscription(user: User = Depends(current_user)):
+    """
+    Отмена подписки: прекращаем автосписания И отвязываем сохранённый способ
+    оплаты.
+
+    Очистка payment_method_id здесь обязательна, а не косметика: ЮKassa
+    подключает рекуррентные платежи только тем магазинам, где покупатель может
+    самостоятельно отвязать карту, не обращаясь в поддержку. Эта ручка (и
+    кнопка «Отменить подписку» в кабинете, которая её дёргает) -- и есть
+    выполнение того требования. После неё сохранённым методом физически нечем
+    списать: продление берёт payment_method_id именно отсюда.
+
+    Уже оплаченные токены НЕ отбираем и подписку не удаляем задним числом --
+    человек оплатил текущий период и должен им пользоваться.
+    """
+    from database import Subscription
+    with session() as s:
+        subs = s.exec(
+            select(Subscription).where(
+                Subscription.user_id == user.id,
+                Subscription.status.in_(["active", "suspended"]),
+            )
+        ).all()
+        if not subs:
+            raise HTTPException(404, "Активной подписки нет")
+        for sub in subs:
+            sub.status = "cancelled"
+            sub.cancelled_at = datetime.utcnow()
+            sub.next_charge_at = None
+            sub.payment_method_id = ""   # отвязка карты
+            s.add(sub)
+        s.commit()
+        logger.info(
+            f"Подписка пользователя {user.id} отменена ({len(subs)} шт.), "
+            f"сохранённый способ оплаты отвязан"
+        )
+    return {"ok": True}
+
+
+def _activate_subscription(s, pay: Payment, yk_payment: dict) -> None:
+    """
+    Заводит или продлевает подписку после успешной оплаты.
+
+    Вызывается из обоих путей зачисления (вебхук и sync) сразу после того, как
+    платёж переведён в "paid" -- одной функцией, чтобы поведение не разъезжалось
+    между путями.
+
+    Если YooKassa не сохранила метод оплаты (пользователь платил способом, не
+    поддерживающим рекурренты), подписку всё равно НЕ заводим -- иначе в
+    интерфейсе висела бы активная подписка, списать по которой невозможно.
+    Оплаченные токены при этом уже зачислены и никуда не денутся: человек
+    просто остаётся на разовой оплате.
+    """
+    from database import Subscription
+    if not config.SUBSCRIPTION_ENABLED:
+        # Разовый режим: токены уже начислены выше, подписке взяться неоткуда.
+        return
+    try:
+        method_id = billing.extract_saved_method_id(yk_payment)
+        now = datetime.utcnow()
+        sub = s.exec(
+            select(Subscription).where(
+                Subscription.user_id == pay.user_id,
+                Subscription.status.in_(["active", "suspended"]),
+            )
+        ).first()
+
+        if not method_id and not sub:
+            # Самая частая причина -- у магазина не подключены автоплатежи.
+            # Включить их самостоятельно в настройках нельзя, это делается
+            # через менеджера ЮKassa, поэтому логируем сырой payment_method:
+            # по полю saved сразу видно, сохранила ли ЮKassa метод оплаты.
+            logger.warning(
+                "Платёж %s: метод оплаты НЕ сохранён -- подписка не заводится, "
+                "человек остаётся на разовой оплате. payment_method=%s. "
+                "Если saved=false -- у магазина не подключены автоплатежи "
+                "(запрашиваются у менеджера ЮKassa).",
+                pay.id, yk_payment.get("payment_method"),
+            )
+            return
+
+        next_charge = now + timedelta(days=config.SUBSCRIPTION_PERIOD_DAYS)
+        if sub:
+            # Продление уже существующей подписки (в том числе воскрешение
+            # приостановленной, если человек оплатил вручную).
+            sub.status = "active"
+            sub.package_id = pay.package_id or sub.package_id
+            # Цену НЕ переписываем текущей ценой из конфига -- за подписчиком
+            # сохраняется та, по которой он оформился (оферта, п. 3).
+            # Проставляем только если её ещё нет (старые строки до миграции).
+            if not sub.price_rub:
+                sub.price_rub = pay.rub
+            if method_id:
+                sub.payment_method_id = method_id
+            sub.next_charge_at = next_charge
+            sub.fail_count = 0
+            sub.last_error = ""
+            s.add(sub)
+        else:
+            s.add(Subscription(
+                user_id=pay.user_id,
+                package_id=pay.package_id,
+                price_rub=pay.rub,
+                payment_method_id=method_id,
+                status="active",
+                period_no=1,
+                next_charge_at=next_charge,
+            ))
+        s.commit()
+        logger.info(
+            "Подписка пользователя %s активна, следующее списание %s",
+            pay.user_id, next_charge.isoformat(),
+        )
+    except Exception:
+        # Деньги уже зачислены выше -- падать здесь нельзя, иначе вебхук
+        # ответит ошибкой и YooKassa начнёт слать повторы по уже
+        # обработанному платежу.
+        logger.exception("Не удалось активировать подписку по платежу %s", pay.id)
+        try:
+            s.rollback()
+        except Exception:
+            pass
+
+
 @app.post("/api/billing/buy")
 async def buy(data: BuyIn, user: User = Depends(current_user)):
     pkg = config.package_by_id(data.package_id)
@@ -1150,7 +1355,11 @@ async def buy(data: BuyIn, user: User = Depends(current_user)):
         raise HTTPException(400, "Приём платежей не настроен")
 
     label = f"u{user.id}-{data.package_id}-{secrets.token_hex(6)}"
-    description = f"Автопост: пакет «{pkg['title']}» ({pkg['tokens']} токенов)"
+    description = (
+        f"Автопост: подписка «{pkg['title']}», {config.SUBSCRIPTION_PERIOD_DAYS} дн."
+        if config.SUBSCRIPTION_ENABLED
+        else f"Автопост: пакет «{pkg['title']}» ({pkg['tokens']} токенов)"
+    )
 
     with session() as s:
         pay = Payment(
@@ -1174,6 +1383,11 @@ async def buy(data: BuyIn, user: User = Depends(current_user)):
             user_id=user.id,
             package_id=pkg["id"],
             user_email=user.email,
+            # Первый платёж подписки: просим YooKassa сохранить метод оплаты,
+            # иначе продлевать будет нечем (см. billing.charge_recurring).
+            # Пока рекуррент не согласован с ЮKassa -- не просим вовсе, чтобы
+            # не создавать видимость подписки там, где её не будет.
+            save_payment_method=config.SUBSCRIPTION_ENABLED,
         )
     except billing.YooKassaError as exc:
         with session() as s:
@@ -1283,6 +1497,7 @@ async def yookassa_notify(request: Request):
             s.add(pay)
             s.commit()
             logger.info("Платёж YooKassa зачтён: пользователь %s +%s токенов", pay.user_id, pay.tokens)
+            _activate_subscription(s, pay, yk_payment)
 
     return PlainTextResponse("OK", status_code=200)
 

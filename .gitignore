@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Локальная база (проект работает на SQLite, когда DATABASE_URL не задан --
+# см. config.DATABASE_URL, дефолт sqlite:///./postbot.db)
+*.db
+*.sqlite
+*.sqlite3
+
+# Секреты. В репозитории их сейчас нет и быть не должно: ключи Yandex,
+# YooKassa и токены ботов задаются переменными окружения на сервере.
+.env
+.env.*
+!.env.example
+
+# Служебное
+.DS_Store
+*.log

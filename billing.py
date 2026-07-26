@@ -72,8 +72,16 @@ async def create_payment(
     user_id: int,
     package_id: str,
     user_email: str | None = None,
+    save_payment_method: bool = False,
 ) -> dict[str, Any]:
-    """Создаёт платёж YooKassa и возвращает объект платежа."""
+    """
+    Создаёт платёж YooKassa и возвращает объект платежа.
+
+    save_payment_method=True -- первый платёж подписки: просим YooKassa
+    сохранить метод оплаты, чтобы дальше списывать автоматически без участия
+    пользователя (см. charge_recurring). Пользователь подтверждает привязку
+    на стороне YooKassa в тот же момент, что и саму оплату.
+    """
     if not is_configured():
         raise YooKassaError("YooKassa не настроена: задайте YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY")
 
@@ -91,6 +99,8 @@ async def create_payment(
             "package_id": package_id,
         },
     }
+    if save_payment_method:
+        payload["save_payment_method"] = True
 
     receipt = _receipt(description, amount_rub, user_email)
     if receipt:
@@ -121,6 +131,91 @@ async def create_payment(
     if not confirmation_url:
         raise YooKassaError("YooKassa не вернула ссылку на оплату")
     return data
+
+
+async def charge_recurring(
+    *,
+    payment_method_id: str,
+    amount_rub: float,
+    description: str,
+    user_id: int,
+    package_id: str,
+    label: str,
+    idempotence_key: str,
+    user_email: str | None = None,
+) -> dict[str, Any]:
+    """
+    Автосписание по сохранённому методу оплаты -- продление подписки без
+    участия пользователя.
+
+    Отличия от create_payment: передаём payment_method_id и НЕ передаём
+    confirmation (подтверждать нечего, деньги списываются сразу).
+
+    idempotence_key обязателен и должен быть детерминированным для конкретного
+    периода подписки, а не случайным: YooKassa по этому ключу отдаёт уже
+    созданный платёж вместо создания нового. Именно это защищает от двойного
+    списания, если джоба продления упала после запроса, но до записи
+    результата в БД, и запустилась повторно.
+    """
+    if not is_configured():
+        raise YooKassaError("YooKassa не настроена")
+    if not payment_method_id:
+        raise YooKassaError("Нет сохранённого метода оплаты")
+    if not idempotence_key:
+        raise YooKassaError("Для автосписания обязателен idempotence_key")
+
+    payload: dict[str, Any] = {
+        "amount": _amount(amount_rub),
+        "capture": True,
+        "payment_method_id": payment_method_id,
+        "description": description[:128],
+        "metadata": {
+            "label": label,
+            "user_id": str(user_id),
+            "package_id": package_id,
+            "recurring": "1",
+        },
+    }
+
+    receipt = _receipt(description, amount_rub, user_email)
+    if receipt:
+        payload["receipt"] = receipt
+
+    headers = {
+        "Idempotence-Key": idempotence_key,
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        try:
+            response = await client.post(
+                YOOKASSA_PAYMENTS_URL,
+                auth=_auth(),
+                headers=headers,
+                json=payload,
+            )
+        except httpx.HTTPError as exc:
+            raise YooKassaError(f"Не удалось обратиться к YooKassa: {exc}") from exc
+
+    if response.status_code >= 400:
+        logger.warning("YooKassa charge_recurring error %s: %s", response.status_code, response.text)
+        raise YooKassaError(_extract_error_message(response))
+
+    return response.json()
+
+
+def extract_saved_method_id(payment: dict[str, Any]) -> str:
+    """
+    Достаёт id сохранённого метода оплаты из ответа YooKassa.
+
+    Метод пригоден для автосписаний только если YooKassa явно пометила его
+    saved=true -- обычный (не сохранённый) метод для рекуррентов не подходит,
+    поэтому проверяем флаг, а не просто наличие id.
+    """
+    method = payment.get("payment_method") or {}
+    if not method.get("saved"):
+        return ""
+    return method.get("id") or ""
 
 
 async def get_payment(payment_id: str) -> dict[str, Any]:

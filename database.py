@@ -288,6 +288,47 @@ class IdempotencyKey(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class Subscription(SQLModel, table=True):
+    """
+    Подписка на тариф: регулярное списание через YooKassa сохранённым методом
+    оплаты (см. billing.charge_recurring и tasks.charge_due_subscriptions).
+
+    Новая отдельная таблица -- та же безопасная схема, что PostApproval/
+    TelegramIdentity/IdempotencyKey: создаётся через create_all(), без ALTER
+    TABLE на User/Payment и других уже задеплоенных таблицах. В частности,
+    payment_method_id намеренно живёт здесь, а не новой колонкой в Payment.
+
+    status:
+      active     -- списываем в next_charge_at
+      cancelled  -- пользователь отменил, больше не списываем; оплаченный
+                    период при этом не отбираем (см. next_charge_at)
+      suspended  -- подряд не прошло SUBSCRIPTION_MAX_FAILS списаний
+                    (нет денег/карта отвязана), автосписания прекращены
+
+    last_period_key -- защита от двойного списания: ключ оплаченного периода
+    (id подписки + порядковый номер периода). Перед списанием сверяем его и
+    используем как Idempotence-Key для YooKassa, поэтому повторный запуск
+    джобы или её параллельный инстанс не спишут деньги дважды.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    package_id: str
+    # Цена, зафиксированная при оформлении подписки. Продлеваем именно по
+    # ней, а не по текущей цене из конфига: и оферта (п. 3), и плашка на
+    # тарифах обещают, что цена оформления сохранится за подписчиком. Без
+    # этого поля повышение цен молча подняло бы списания уже подписанным.
+    price_rub: float = 0
+    payment_method_id: str = Field(default="", index=True)
+    status: str = Field(default="active", index=True)
+    period_no: int = 1
+    last_period_key: str = ""
+    next_charge_at: Optional[datetime] = Field(default=None, index=True)
+    fail_count: int = 0
+    last_error: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    cancelled_at: Optional[datetime] = None
+
+
 def _add_missing_columns():
     """
     Точечный самолечащийся фикс уже случившегося дрейфа схемы -- НЕ общая
@@ -319,6 +360,25 @@ def _add_missing_columns():
             logger.info("Миграция: добавлена колонка postapproval.final_warning_sent")
     except Exception:
         logger.exception("Миграция postapproval.final_warning_sent не удалась")
+
+    # Subscription.price_rub -- зафиксированная цена подписки. Таблица
+    # subscription могла быть уже создана предыдущим деплоем без этой
+    # колонки, а create_all() колонки в существующие таблицы не добавляет.
+    # Та же идемпотентная, проверяющая inspector'ом схема, что и выше.
+    try:
+        inspector = inspect(engine)
+        if "subscription" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("subscription")}
+            if "price_rub" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE subscription ADD COLUMN price_rub DOUBLE PRECISION NOT NULL DEFAULT 0"
+                        if engine.dialect.name == "postgresql"
+                        else "ALTER TABLE subscription ADD COLUMN price_rub REAL NOT NULL DEFAULT 0"
+                    ))
+                logger.info("Миграция: добавлена колонка subscription.price_rub")
+    except Exception:
+        logger.exception("Миграция subscription.price_rub не удалась")
 
 
 def init_db():
