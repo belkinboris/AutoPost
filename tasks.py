@@ -1270,6 +1270,71 @@ async def charge_due_subscriptions():
                 s.add(sub); s.commit()
 
 
+async def daily_quality_check():
+    """
+    Ежедневный автоматический контроль качества: прогоняет quality-scan и, если
+    нашлись критичные проблемы, присылает владельцу сводку в Telegram.
+
+    Смысл именно в уведомлении, а не в эндпоинте. Дефекты вроде постов-
+    близнецов не видны ни в коде, ни в метриках -- их замечает только тот, кто
+    смотрит на реальные посты. Рассчитывать, что кто-то будет делать это
+    регулярно вручную, нельзя. Поэтому сервис сам проверяет свой результат и
+    сам сообщает, когда с ним что-то не так.
+
+    Получатели -- пользователи с is_admin и подключённым Telegram. Если таких
+    нет, находки всё равно остаются в логах.
+    """
+    try:
+        from internal_quality_scan import quality_scan
+    except Exception as e:
+        logger.warning(f"quality-scan недоступен: {e}")
+        return
+
+    try:
+        # Вызываем напрямую, минуя HTTP: свой же процесс, авторизация не нужна.
+        import internal_quality_scan as _qs
+        token = _qs.INTERNAL_API_TOKEN
+        if not token:
+            logger.info("daily_quality_check: TRUEPOST_INTERNAL_API_TOKEN не задан, проверка пропущена")
+            return
+        report = quality_scan(period_days=1, authorization=f"Bearer {token}")
+    except Exception as e:
+        logger.warning(f"daily_quality_check: скан не отработал: {e}")
+        return
+
+    high = [f for f in report.get("findings", []) if f.get("severity") == "high"]
+    logger.info(
+        f"[quality-scan] постов={report['scanned']['posts']} "
+        f"находок={len(report.get('findings', []))} критичных={len(high)}"
+    )
+    for f in report.get("findings", []):
+        logger.info(f"[quality-scan] {f['severity']}: {f['title']} -- {f['count']}")
+
+    if not high:
+        return
+
+    lines = ["⚠️ <b>АвтоПост: проверка качества</b>", ""]
+    for f in high:
+        lines.append(f"• <b>{f['title']}</b> — {f['count']}")
+    lines.append("")
+    lines.append("Подробности с примерами: /api/internal/quality-scan")
+    text = "\n".join(lines)
+
+    with session() as s:
+        admins = [
+            u.tg_chat_id for u in s.exec(select(User).where(User.is_admin == True)).all()  # noqa
+            if u.tg_chat_id
+        ]
+    if not admins:
+        logger.info("daily_quality_check: нет админов с подключённым Telegram, только лог")
+        return
+    for chat_id in admins:
+        try:
+            await _notify_user_by_id(chat_id, text)
+        except Exception as e:
+            logger.warning(f"daily_quality_check: не отправилось {chat_id}: {e}")
+
+
 async def tick():
     now = datetime.utcnow()
 
