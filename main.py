@@ -1282,6 +1282,11 @@ def _activate_subscription(s, pay: Payment, yk_payment: dict) -> None:
             # приостановленной, если человек оплатил вручную).
             sub.status = "active"
             sub.package_id = pay.package_id or sub.package_id
+            # Цену НЕ переписываем текущей ценой из конфига -- за подписчиком
+            # сохраняется та, по которой он оформился (оферта, п. 3).
+            # Проставляем только если её ещё нет (старые строки до миграции).
+            if not sub.price_rub:
+                sub.price_rub = pay.rub
             if method_id:
                 sub.payment_method_id = method_id
             sub.next_charge_at = next_charge
@@ -1292,6 +1297,7 @@ def _activate_subscription(s, pay: Payment, yk_payment: dict) -> None:
             s.add(Subscription(
                 user_id=pay.user_id,
                 package_id=pay.package_id,
+                price_rub=pay.rub,
                 payment_method_id=method_id,
                 status="active",
                 period_no=1,

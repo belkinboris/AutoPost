@@ -313,6 +313,11 @@ class Subscription(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     package_id: str
+    # Цена, зафиксированная при оформлении подписки. Продлеваем именно по
+    # ней, а не по текущей цене из конфига: и оферта (п. 3), и плашка на
+    # тарифах обещают, что цена оформления сохранится за подписчиком. Без
+    # этого поля повышение цен молча подняло бы списания уже подписанным.
+    price_rub: float = 0
     payment_method_id: str = Field(default="", index=True)
     status: str = Field(default="active", index=True)
     period_no: int = 1
@@ -355,6 +360,25 @@ def _add_missing_columns():
             logger.info("Миграция: добавлена колонка postapproval.final_warning_sent")
     except Exception:
         logger.exception("Миграция postapproval.final_warning_sent не удалась")
+
+    # Subscription.price_rub -- зафиксированная цена подписки. Таблица
+    # subscription могла быть уже создана предыдущим деплоем без этой
+    # колонки, а create_all() колонки в существующие таблицы не добавляет.
+    # Та же идемпотентная, проверяющая inspector'ом схема, что и выше.
+    try:
+        inspector = inspect(engine)
+        if "subscription" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("subscription")}
+            if "price_rub" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE subscription ADD COLUMN price_rub DOUBLE PRECISION NOT NULL DEFAULT 0"
+                        if engine.dialect.name == "postgresql"
+                        else "ALTER TABLE subscription ADD COLUMN price_rub REAL NOT NULL DEFAULT 0"
+                    ))
+                logger.info("Миграция: добавлена колонка subscription.price_rub")
+    except Exception:
+        logger.exception("Миграция subscription.price_rub не удалась")
 
 
 def init_db():

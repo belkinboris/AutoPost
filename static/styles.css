@@ -244,6 +244,14 @@ input:checked + .slider:before { transform: translateX(18px); }
 .post-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 /* Пустой слот очереди: показывает, сколько постов система держит наготове,
    и даёт создать пост, не дожидаясь расписания. */
+/* Стартовые цены: зачёркнутая цена -- БУДУЩАЯ («потом»), не прошлая. */
+.p-regular { font-size: 13px; color: var(--text-faint); text-decoration: line-through;
+  text-decoration-color: var(--accent); margin-bottom: 2px; }
+.promo-bar { background: var(--accent-soft); border-radius: var(--radius);
+  padding: 12px 16px; margin-bottom: 16px; font-size: 13px; line-height: 1.6;
+  color: var(--text-dim); }
+.promo-bar b { color: var(--accent-dark); }
+
 .queue-slot { border: 1px dashed var(--border); border-radius: var(--radius);
   padding: 20px; margin-bottom: 12px; text-align: center; background: transparent; }
 .queue-slot-muted { opacity: .55; }

@@ -1037,6 +1037,13 @@ async def charge_due_subscriptions():
             user = s.get(User, sub.user_id)
             user_email = user.email if user else None
             uid, pkg_id = sub.user_id, sub.package_id
+            # КРИТИЧНО: списываем цену, ЗАФИКСИРОВАННУЮ при оформлении, а не
+            # текущую из конфига. Оферта (п. 3) и плашка на тарифах обещают
+            # подписчику сохранение его цены -- если брать pkg["rub"],
+            # повышение цен молча подняло бы списания уже подписанным, то есть
+            # мы нарушили бы собственный договор. Фолбэк на текущую цену -- для
+            # строк, созданных до появления price_rub.
+            charge_rub = sub.price_rub or pkg["rub"]
 
         # Метка платежа детерминированная (равна period_key), БЕЗ случайной
         # части. Это второй рубеж защиты от двойного начисления: если процесс
@@ -1068,7 +1075,7 @@ async def charge_due_subscriptions():
             if pay is None:
                 pay = _Payment(
                     user_id=uid, package_id=pkg_id, label=label,
-                    rub=pkg["rub"], tokens=pkg["tokens"], status="pending",
+                    rub=charge_rub, tokens=pkg["tokens"], status="pending",
                 )
                 s.add(pay); s.commit(); s.refresh(pay)
             pay_id = pay.id
@@ -1076,7 +1083,7 @@ async def charge_due_subscriptions():
         try:
             result = await billing.charge_recurring(
                 payment_method_id=sub.payment_method_id,
-                amount_rub=pkg["rub"],
+                amount_rub=charge_rub,
                 description=f"Автопост: продление подписки «{pkg['title']}»",
                 user_id=uid,
                 package_id=pkg_id,

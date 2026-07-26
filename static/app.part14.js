@@ -7,10 +7,10 @@ async function renderBilling(){
   try{ App._subscription=(await api("GET","/subscription")).subscription; }
   catch(_){ App._subscription=null; }
   const plans=[
-    {id:"p1",name:"Старт",price:"490 ₽/мес",channels:1,postsMin:30,postsMax:60},
-    {id:"p2",name:"Про",price:"1 290 ₽/мес",channels:3,postsMin:75,postsMax:150,popular:true},
-    {id:"p3",name:"Бизнес",price:"3 990 ₽/мес",channels:10,postsMin:250,postsMax:500},
-    {id:"p4",name:"Агентство",price:"7 490 ₽/мес",channels:0,postsMin:500,postsMax:1000},
+    {id:"p1",name:"Старт",price:490,regular:990,channels:1,postsMin:15,postsMax:30},
+    {id:"p2",name:"Про",price:990,regular:1990,channels:3,postsMin:30,postsMax:60,popular:true},
+    {id:"p3",name:"Бизнес",price:2490,regular:4990,channels:10,postsMin:75,postsMax:150},
+    {id:"p4",name:"Агентство",price:4990,regular:9990,channels:0,postsMin:150,postsMax:300},
   ];
   const sub=App._subscription||null;
   $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap">
@@ -20,11 +20,16 @@ async function renderBilling(){
     ${(!App.cfg?.yookassa_enabled&&!App.cfg?.yoomoney_enabled)?`<div class="card" style="border-color:var(--accent);background:var(--accent-soft);margin-bottom:16px">
       <p style="color:var(--accent-dark)">Приём платежей настраивается.</p></div>`:""}
     ${_subscriptionCard(sub)}
+    ${plans.some(p=>p.regular)?`<div class="promo-bar">
+      <b>Цены на время запуска.</b> Сервис ещё развивается — пока он в раннем доступе, тарифы держим ниже
+      обычных. Цена, по которой вы подписались, за вами сохранится.
+    </div>`:""}
     <div class="grid grid-2" style="margin-bottom:16px">
       ${plans.map(p=>`<div class="price-card" style="position:relative;${p.popular?"border-color:var(--accent)":""}">
         ${p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
         <div class="p-name">${p.name}</div>
-        <div class="p-price" style="font-size:24px">${p.price}</div>
+        ${p.regular?`<div class="p-regular">потом ${_rub(p.regular)} ₽</div>`:""}
+        <div class="p-price" style="font-size:24px">${_rub(p.price)} ₽/мес</div>
         <div class="p-tokens" style="line-height:1.8">
           📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${_plural(p.channels,"канал","канала","каналов")}`}<br>
           ✦ ${p.postsMin}–${p.postsMax} постов/мес</div>
@@ -91,6 +96,9 @@ function togglePayHistory(){
   if(arrow) arrow.textContent=hidden?"▼":"▶";
   if(hidden && window._loadPayHistory) window._loadPayHistory();
 }
+
+// 1290 -> "1 290" (неразрывный пробел, чтобы цена не переносилась)
+function _rub(n){ return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
 
 // Русское склонение по числу: 1 канал / 2 канала / 10 каналов.
 function _plural(n, one, few, many){
