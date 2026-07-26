@@ -2839,8 +2839,10 @@ async function generateNow(){
 async function renderBilling(){
   await refreshUser();
   logProductEvent("pricing_viewed");
-  try{ App._subscription=(await api("GET","/subscription")).subscription; }
-  catch(_){ App._subscription=null; }
+  try{
+    const r=await api("GET","/subscription");
+    App._subscription=r.subscription; App._paymentMethod=r.payment_method||null;
+  }catch(_){ App._subscription=null; App._paymentMethod=null; }
   const plans=[
     {id:"p1",name:"Старт",price:490,regular:990,channels:1,postsMin:15,postsMax:30},
     {id:"p2",name:"Про",price:990,regular:1990,channels:3,postsMin:30,postsMax:60,popular:true},
@@ -2855,6 +2857,7 @@ async function renderBilling(){
     ${(!App.cfg?.yookassa_enabled&&!App.cfg?.yoomoney_enabled)?`<div class="card" style="border-color:var(--accent);background:var(--accent-soft);margin-bottom:16px">
       <p style="color:var(--accent-dark)">Приём платежей настраивается.</p></div>`:""}
     ${_subscriptionCard(sub)}
+    ${_paymentMethodBlock()}
     ${plans.some(p=>p.regular)?`<div class="promo-bar">
       <b>Цены на время запуска.</b> Сервис ещё развивается — пока он в раннем доступе, тарифы держим ниже
       обычных.${App.cfg?.subscription_enabled?" Цена, по которой вы подписались, за вами сохранится.":""}
@@ -2942,6 +2945,60 @@ function _plural(n, one, few, many){
   if(b>1&&b<5) return few;
   if(b===1) return one;
   return many;
+}
+
+// Управление сохранённым способом оплаты. Блок показывается ВСЕГДА, даже
+// когда карта не привязана: ЮKassa подключает рекуррентные платежи только
+// тем магазинам, где покупатель видит и может сам выполнить сценарий отвязки
+// карты, не обращаясь в поддержку. Если показывать блок лишь при активной
+// подписке, сценарий невозможно ни увидеть, ни продемонстрировать.
+function _paymentMethodBlock(){
+  const pm=App._paymentMethod||null;
+  const has=!!pm;
+  return `<div class="card" style="margin-bottom:16px">
+    <div class="card-title">Способ оплаты</div>
+    <div class="pm-row">
+      <label class="pm-item">
+        <input type="checkbox" id="pm_confirm" ${has?"":"disabled"} onchange="pmToggle()">
+        <span>
+          <b>${has?esc(pm.title):"Сохранённых карт нет"}</b>
+          <small>${has
+            ? "Привязана для автоматического продления подписки"
+            : "Карта появится здесь после оплаты с сохранением способа оплаты"}</small>
+        </span>
+      </label>
+      <button class="btn-danger btn-sm" id="pm_delete" disabled onclick="deletePaymentMethod()">Удалить карту</button>
+    </div>
+    <div class="hint" style="margin-top:10px">
+      Отметьте карту и нажмите «Удалить карту» — мы удалим сохранённый способ оплаты
+      и прекратим автоматические списания. Обращаться в поддержку не нужно.
+    </div>
+  </div>`;
+}
+
+// Кнопка удаления активна только после явной отметки чек-бокса -- защита от
+// случайного нажатия на необратимое действие.
+function pmToggle(){
+  const c=$("pm_confirm"), b=$("pm_delete");
+  if(c&&b) b.disabled=!c.checked;
+}
+
+async function deletePaymentMethod(){
+  const c=$("pm_confirm");
+  if(!c||!c.checked) return;
+  if(!confirm("Удалить сохранённую карту?\n\nАвтоматические списания прекратятся. "+
+              "Оплаченный период и уже начисленные посты останутся при вас.")) return;
+  const b=$("pm_delete");
+  if(b){ b.disabled=true; b.innerHTML='<span class="spinner"></span>'; }
+  try{
+    await api("DELETE","/subscription");
+    logProductEvent("payment_method_deleted");
+    toast("Карта удалена, списаний больше не будет","ok");
+    renderBilling();
+  }catch(e){
+    toast(e&&e.message?e.message:"Не удалось удалить карту","err");
+    if(b){ b.disabled=false; b.innerHTML="Удалить карту"; }
+  }
 }
 
 function _subscriptionCard(sub){

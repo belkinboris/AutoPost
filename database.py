@@ -319,6 +319,11 @@ class Subscription(SQLModel, table=True):
     # этого поля повышение цен молча подняло бы списания уже подписанным.
     price_rub: float = 0
     payment_method_id: str = Field(default="", index=True)
+    # Человекочитаемое описание сохранённого способа оплаты («Банковская карта
+    # •••• 4444»). Нужно, чтобы в кабинете было видно, ЧТО именно привязано и
+    # что пользователь удаляет -- ЮKassa требует наглядный сценарий отвязки.
+    # Реквизиты карты целиком мы не получаем и не храним, только маску.
+    payment_method_title: str = ""
     status: str = Field(default="active", index=True)
     period_no: int = 1
     last_period_key: str = ""
@@ -377,6 +382,12 @@ def _add_missing_columns():
                         else "ALTER TABLE subscription ADD COLUMN price_rub REAL NOT NULL DEFAULT 0"
                     ))
                 logger.info("Миграция: добавлена колонка subscription.price_rub")
+            if "payment_method_title" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE subscription ADD COLUMN payment_method_title VARCHAR NOT NULL DEFAULT ''"
+                    ))
+                logger.info("Миграция: добавлена колонка subscription.payment_method_title")
     except Exception:
         logger.exception("Миграция subscription.price_rub не удалась")
 

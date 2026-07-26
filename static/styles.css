@@ -244,6 +244,13 @@ input:checked + .slider:before { transform: translateX(18px); }
 .post-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 /* Пустой слот очереди: показывает, сколько постов система держит наготове,
    и даёт создать пост, не дожидаясь расписания. */
+/* Управление сохранённой картой (требование ЮKassa к рекуррентам). */
+.pm-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pm-item { display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 200px; cursor: pointer; }
+.pm-item input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0; accent-color: var(--accent); }
+.pm-item b { display: block; font-size: 14px; font-weight: 600; }
+.pm-item small { display: block; font-size: 12px; color: var(--text-faint); margin-top: 2px; line-height: 1.5; }
+
 /* Стартовые цены: зачёркнутая цена -- БУДУЩАЯ («потом»), не прошлая. */
 .p-regular { font-size: 13px; color: var(--text-faint); text-decoration: line-through;
   text-decoration-color: var(--accent); margin-bottom: 2px; }

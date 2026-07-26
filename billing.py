@@ -204,6 +204,26 @@ async def charge_recurring(
     return response.json()
 
 
+def describe_payment_method(payment: dict[str, Any]) -> str:
+    """
+    Человекочитаемое описание сохранённого способа оплаты для кабинета:
+    «Банковская карта •••• 4444», «SberPay» и т.п.
+
+    Полных реквизитов карты YooKassa нам не отдаёт и мы их не храним -- только
+    последние 4 цифры из ответа, чтобы пользователь понимал, какую именно карту
+    он отвязывает.
+    """
+    method = payment.get("payment_method") or {}
+    title = method.get("title") or ""
+    card = method.get("card") or {}
+    last4 = card.get("last4") or ""
+    if last4:
+        return f"Банковская карта •••• {last4}"
+    if title:
+        return str(title)
+    return "Сохранённый способ оплаты"
+
+
 def extract_saved_method_id(payment: dict[str, Any]) -> str:
     """
     Достаёт id сохранённого метода оплаты из ответа YooKassa.
