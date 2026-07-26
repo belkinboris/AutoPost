@@ -136,6 +136,11 @@ app.include_router(schema_diag_router)
 from internal_payment_path import router as payment_path_router
 app.include_router(payment_path_router)
 
+# Реальная себестоимость поста по фактическим Post.tokens_used -- чтобы цену
+# тарифов можно было проверять цифрами, а не оценкой "20-40 тысяч токенов".
+from internal_token_economics import router as token_economics_router
+app.include_router(token_economics_router)
+
 from internal_user_journeys import router as user_journeys_router
 from internal_llm_compare import router as llm_compare_router
 from internal_telegram_ping import router as telegram_ping_router
