@@ -5,6 +5,7 @@
 
 import json
 import logging
+import re
 import secrets
 import string
 from contextlib import asynccontextmanager
@@ -242,6 +243,23 @@ def _own_post(s, post_id: int, user: User) -> Post:
 
 # ── Мета ──────────────────────────────────────────────────────
 
+def _frontend_version() -> str:
+    """
+    Версия фронтенда, реально лежащего на сервере -- строка ?v= из index.html.
+
+    Нужна для одного простого вопроса: «что сейчас задеплоено?». Раньше ответить
+    на него можно было только косвенно, разглядывая интерфейс и гадая, свежий он
+    или из кэша. Теперь достаточно открыть /api/config и сравнить версию с той,
+    что в репозитории.
+    """
+    try:
+        with open("static/index.html", encoding="utf-8") as f:
+            m = re.search(r"\?v=([0-9a-z]+)", f.read())
+            return m.group(1) if m else "unknown"
+    except Exception:
+        return "unknown"
+
+
 @app.get("/api/config")
 def get_config():
     return {
@@ -257,6 +275,8 @@ def get_config():
         # Нужен фронту, чтобы честно назвать периодичность списания до оплаты.
         "subscription_period_days": config.SUBSCRIPTION_PERIOD_DAYS,
         "subscription_enabled": config.SUBSCRIPTION_ENABLED,
+        # Что реально задеплоено -- видно без гаданий, прямо в браузере.
+        "frontend_version": _frontend_version(),
         "yookassa_enabled": billing.is_configured(),
         # Старый ключ оставлен для совместимости с фронтом, если браузер закэширует app.js.
         "yoomoney_enabled": billing.is_configured(),
