@@ -2839,25 +2839,29 @@ async function generateNow(){
 async function renderBilling(){
   await refreshUser();
   logProductEvent("pricing_viewed");
+  try{ App._subscription=(await api("GET","/subscription")).subscription; }
+  catch(_){ App._subscription=null; }
   const plans=[
-    {id:"p1",name:"Старт",price:"990 ₽/мес",channels:1,postsMin:30,postsMax:60},
-    {id:"p2",name:"Про",price:"2 490 ₽/мес",channels:3,postsMin:75,postsMax:150,popular:true},
-    {id:"p3",name:"Бизнес",price:"7 990 ₽/мес",channels:10,postsMin:250,postsMax:500},
-    {id:"p4",name:"Агентство",price:"14 990 ₽/мес",channels:0,postsMin:500,postsMax:1000},
+    {id:"p1",name:"Старт",price:"490 ₽/мес",channels:1,postsMin:30,postsMax:60},
+    {id:"p2",name:"Про",price:"1 290 ₽/мес",channels:3,postsMin:75,postsMax:150,popular:true},
+    {id:"p3",name:"Бизнес",price:"3 990 ₽/мес",channels:10,postsMin:250,postsMax:500},
+    {id:"p4",name:"Агентство",price:"7 490 ₽/мес",channels:0,postsMin:500,postsMax:1000},
   ];
+  const sub=App._subscription||null;
   $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap">
     <div class="page-head"><h1>Тарифы</h1>
       <p>Осталось <b>${Math.floor((App.user?.token_balance||0)/40000)}–${Math.floor((App.user?.token_balance||0)/20000)}</b> постов.<br>
       <span style="font-size:13px;color:var(--text-faint)">Диапазон зависит от сложности: пост с поиском свежих новостей расходует больше, простой — меньше.</span></p></div>
     ${(!App.cfg?.yookassa_enabled&&!App.cfg?.yoomoney_enabled)?`<div class="card" style="border-color:var(--accent);background:var(--accent-soft);margin-bottom:16px">
       <p style="color:var(--accent-dark)">Приём платежей настраивается.</p></div>`:""}
+    ${_subscriptionCard(sub)}
     <div class="grid grid-2" style="margin-bottom:16px">
       ${plans.map(p=>`<div class="price-card" style="position:relative;${p.popular?"border-color:var(--accent)":""}">
         ${p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
         <div class="p-name">${p.name}</div>
         <div class="p-price" style="font-size:24px">${p.price}</div>
         <div class="p-tokens" style="line-height:1.8">
-          📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${p.channels===1?"канал":"канала"}`}<br>
+          📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${_plural(p.channels,"канал","канала","каналов")}`}<br>
           ✦ ${p.postsMin}–${p.postsMax} постов/мес</div>
         <button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>
       </div>`).join("")}
@@ -2923,8 +2927,76 @@ function togglePayHistory(){
   if(hidden && window._loadPayHistory) window._loadPayHistory();
 }
 
+// Русское склонение по числу: 1 канал / 2 канала / 10 каналов.
+function _plural(n, one, few, many){
+  const a=Math.abs(n)%100, b=a%10;
+  if(a>10&&a<20) return many;
+  if(b>1&&b<5) return few;
+  if(b===1) return one;
+  return many;
+}
+
+function _subscriptionCard(sub){
+  const days=App.cfg?.subscription_period_days||30;
+  if(!sub){
+    // Подписки нет -- честно предупреждаем о характере платежа до того, как
+    // человек нажмёт «Выбрать», а не только в момент подтверждения.
+    return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:16px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--text-dim);line-height:1.6">
+        Тарифы — это подписка: плата списывается автоматически раз в ${days} дней, пока вы её не отмените.
+        Отменить можно в любой момент здесь же, деньги за оплаченный период не сгорают.
+      </div></div>`;
+  }
+  const when=sub.next_charge_at
+    ? new Date(sub.next_charge_at).toLocaleDateString("ru-RU",{day:"numeric",month:"long",year:"numeric"})
+    : "—";
+  if(sub.status==="suspended"){
+    return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:16px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Подписка «${esc(sub.title)}» приостановлена</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+        Списать оплату не получилось. Автосписания остановлены — выберите тариф ниже, чтобы возобновить подписку.
+      </div>
+      <button class="btn-ghost btn-sm" style="margin-top:8px;padding:4px 0;color:var(--accent-dark)" onclick="cancelSubscription()">Отменить подписку</button>
+    </div>`;
+  }
+  return `<div class="card" style="background:var(--green-bg,var(--surface2));border:none;margin-bottom:16px;padding:14px 16px">
+    <div style="font-size:13px;font-weight:600">Подписка «${esc(sub.title)}» активна</div>
+    <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+      Следующее списание ${sub.rub?`${sub.rub} ₽ `:""}— ${when} Дальше каждые ${days} дней, пока не отмените.
+    </div>
+    <button class="btn-ghost btn-sm" style="margin-top:8px;padding:4px 0;color:var(--red,#c0392b)" onclick="cancelSubscription()">Отменить подписку</button>
+  </div>`;
+}
+
+async function cancelSubscription(){
+  if(!confirm("Отменить подписку?\n\nАвтосписания прекратятся. Оплаченный период и уже начисленные посты останутся при вас.")) return;
+  try{
+    await api("DELETE","/subscription");
+    logProductEvent("subscription_cancelled");
+    toast("Подписка отменена","ok");
+    renderBilling();
+  }catch(e){
+    toast(e&&e.message?e.message:"Не удалось отменить подписку","err");
+  }
+}
+
 async function buy(pid){
   logProductEvent("payment_cta_clicked", pid);
+  // Регулярное списание обязано быть раскрыто ДО оплаты, явно и своими
+  // словами -- человек должен понимать, что подписывается на повторяющийся
+  // платёж, а не платит один раз. Отмена тут же названа, чтобы это не
+  // выглядело ловушкой.
+  const plan=(App.cfg?.packages||[]).find(p=>p.id===pid);
+  const days=App.cfg?.subscription_period_days||30;
+  if(plan){
+    const ok=confirm(
+      `Тариф «${plan.title}» — ${plan.rub} ₽ каждые ${days} дней.\n\n`+
+      `Первый платёж спишется сейчас, дальше — автоматически раз в ${days} дней, `+
+      `пока вы не отмените подписку.\n\n`+
+      `Отменить можно в любой момент на этой же странице, кнопкой «Отменить подписку».`
+    );
+    if(!ok){ logProductEvent("payment_declined_at_confirm", pid); return; }
+  }
   try{
     const r = await api("POST", "/billing/buy", {package_id: pid});
     trackGoal("payment_started",{package_id:pid});

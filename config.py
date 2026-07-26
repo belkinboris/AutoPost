@@ -88,24 +88,35 @@ MAIN_BOT_POLL_SECONDS = int(os.getenv("MAIN_BOT_POLL_SECONDS", "3"))
 # Лимит в токенах. Пост стоит 20 000–40 000 токенов в зависимости от сложности.
 # Пользователю показываем ДИАПАЗОН постов: токены / 40k (мин) … токены / 20k (макс)
 PLANS = {
-    "free":     {"title": "Бесплатно",  "rub": 0,      "channels": 1,  "tokens": 120_000},     # 3–6 постов
-    "starter":  {"title": "Старт",      "rub": 990,    "channels": 1,  "tokens": 1_200_000},   # 30–60 постов
-    "pro":      {"title": "Про",        "rub": 2490,   "channels": 3,  "tokens": 3_000_000},   # 75–150 постов
-    "business": {"title": "Бизнес",     "rub": 7990,   "channels": 10, "tokens": 10_000_000},  # 250–500 постов
-    "agency":   {"title": "Агентство",  "rub": 14990,  "channels": 0,  "tokens": 20_000_000},  # 500–1000 постов
+    "free":     {"title": "Бесплатно",  "rub": 0,     "channels": 1,  "tokens": 120_000},     # 3–6 постов
+    "starter":  {"title": "Старт",      "rub": 490,   "channels": 1,  "tokens": 1_200_000},   # 30–60 постов
+    "pro":      {"title": "Про",        "rub": 1290,  "channels": 3,  "tokens": 3_000_000},   # 75–150 постов
+    "business": {"title": "Бизнес",     "rub": 3990,  "channels": 10, "tokens": 10_000_000},  # 250–500 постов
+    "agency":   {"title": "Агентство",  "rub": 7490,  "channels": 0,  "tokens": 20_000_000},  # 500–1000 постов
 }
 
 # Стоимость поста в токенах (для расчёта диапазона)
 POST_TOKENS_MIN = 20_000   # простой пост
 POST_TOKENS_MAX = 40_000   # сложный пост (много промптов, web_search, история)
 
-# Токены для внутреннего учёта (покупка через YooKassa)
+# Тарифы подписки (списываются через YooKassa раз в SUBSCRIPTION_PERIOD_DAYS,
+# см. billing.charge_recurring и tasks.charge_due_subscriptions).
 _DEFAULT_PACKAGES = [
-    {"id": "p1", "title": "Старт",     "rub": 990,   "tokens": 1_200_000},   # 30–60 постов
-    {"id": "p2", "title": "Про",       "rub": 2490,  "tokens": 3_000_000},   # 75–150 постов
-    {"id": "p3", "title": "Бизнес",    "rub": 7990,  "tokens": 10_000_000},  # 250–500 постов
-    {"id": "p4", "title": "Агентство", "rub": 14990, "tokens": 20_000_000},  # 500–1000 постов
+    {"id": "p1", "title": "Старт",     "rub": 490,  "tokens": 1_200_000},   # 30–60 постов
+    {"id": "p2", "title": "Про",       "rub": 1290, "tokens": 3_000_000},   # 75–150 постов
+    {"id": "p3", "title": "Бизнес",    "rub": 3990, "tokens": 10_000_000},  # 250–500 постов
+    {"id": "p4", "title": "Агентство", "rub": 7490, "tokens": 20_000_000},  # 500–1000 постов
 ]
+
+# ── Подписка ──────────────────────────────────────────────────────
+# Период между автосписаниями. Календарный месяц не используем осознанно:
+# фиксированные 30 дней дают предсказуемую дату и не создают краевых случаев
+# с 29–31 числом.
+SUBSCRIPTION_PERIOD_DAYS = int(os.getenv("SUBSCRIPTION_PERIOD_DAYS", "30"))
+# Сколько раз подряд пробуем списать, прежде чем приостановить подписку.
+SUBSCRIPTION_MAX_FAILS = int(os.getenv("SUBSCRIPTION_MAX_FAILS", "3"))
+# Пауза между повторными попытками списания после неудачи.
+SUBSCRIPTION_RETRY_HOURS = int(os.getenv("SUBSCRIPTION_RETRY_HOURS", "24"))
 try:
     TOKEN_PACKAGES = json.loads(os.getenv("TOKEN_PACKAGES", "")) or _DEFAULT_PACKAGES
 except Exception:

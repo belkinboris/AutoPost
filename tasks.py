@@ -979,6 +979,162 @@ async def _ensure_queue(published_post_id: int):
     await _refill_if_active(channel_id)
 
 
+async def charge_due_subscriptions():
+    """
+    Автосписание по подпискам, у которых наступила дата продления.
+
+    Защита от двойного списания двухслойная:
+      1. Idempotence-Key детерминированный -- "sub-{id}-period-{n}". Если
+         запрос ушёл в YooKassa, но ответ потерялся и джоба перезапустилась,
+         YooKassa по тому же ключу вернёт ТОТ ЖЕ платёж, а не создаст новый.
+      2. last_period_key в БД: период, который уже успешно оплачен, второй раз
+         не обрабатываем даже локально.
+
+    Неудачное списание не роняет подписку сразу: пробуем SUBSCRIPTION_MAX_FAILS
+    раз с паузой SUBSCRIPTION_RETRY_HOURS, и только потом переводим в
+    suspended. Токены начисляем только после реального succeeded.
+    """
+    import billing
+    from database import Subscription, Payment as _Payment
+
+    if not billing.is_configured():
+        return
+
+    now = datetime.utcnow()
+    with session() as s:
+        due = s.exec(select(Subscription).where(
+            Subscription.status == "active",
+            Subscription.next_charge_at != None,  # noqa: E711
+            Subscription.next_charge_at <= now,
+        )).all()
+        due_ids = [x.id for x in due]
+
+    for sub_id in due_ids:
+        with session() as s:
+            sub = s.get(Subscription, sub_id)
+            if not sub or sub.status != "active":
+                continue
+            period_key = f"sub-{sub.id}-period-{sub.period_no}"
+            if sub.last_period_key == period_key:
+                # Этот период уже оплачен -- просто двигаем дату вперёд.
+                sub.period_no += 1
+                sub.next_charge_at = now + timedelta(days=config.SUBSCRIPTION_PERIOD_DAYS)
+                s.add(sub); s.commit()
+                continue
+            if not sub.payment_method_id:
+                sub.status = "suspended"
+                sub.last_error = "нет сохранённого метода оплаты"
+                s.add(sub); s.commit()
+                logger.warning(f"Подписка {sub.id}: нет payment_method_id, приостановлена")
+                continue
+            pkg = config.package_by_id(sub.package_id)
+            if not pkg:
+                sub.status = "suspended"
+                sub.last_error = f"тариф {sub.package_id} больше не существует"
+                s.add(sub); s.commit()
+                logger.error(f"Подписка {sub.id}: неизвестный тариф {sub.package_id}")
+                continue
+            user = s.get(User, sub.user_id)
+            user_email = user.email if user else None
+            uid, pkg_id = sub.user_id, sub.package_id
+
+        # Метка платежа детерминированная (равна period_key), БЕЗ случайной
+        # части. Это второй рубеж защиты от двойного начисления: если процесс
+        # упал ПОСЛЕ успешного списания, но ДО записи last_period_key, то при
+        # повторном запуске YooKassa по тому же Idempotence-Key вернёт тот же
+        # платёж (денег спишется столько же), а вот токены мы бы начислили
+        # второй раз. Поэтому перед списанием проверяем, нет ли уже
+        # оплаченного Payment за этот период.
+        label = period_key
+        with session() as s:
+            existing = s.exec(select(_Payment).where(_Payment.label == label)).all()
+            already_paid = next((p for p in existing if p.status == "paid"), None)
+            if already_paid:
+                sub = s.get(Subscription, sub_id)
+                if sub:
+                    sub.last_period_key = period_key
+                    sub.period_no += 1
+                    sub.next_charge_at = datetime.utcnow() + timedelta(days=config.SUBSCRIPTION_PERIOD_DAYS)
+                    sub.fail_count = 0
+                    s.add(sub); s.commit()
+                logger.warning(
+                    f"Подписка {sub_id}: период {period_key} уже оплачен -- "
+                    f"повторное начисление пропущено, дата продления сдвинута"
+                )
+                continue
+            # Переиспользуем зависший pending от прошлой неудачной попытки,
+            # чтобы не плодить мусорные строки на каждый ретрай.
+            pay = next((p for p in existing if p.status == "pending"), None)
+            if pay is None:
+                pay = _Payment(
+                    user_id=uid, package_id=pkg_id, label=label,
+                    rub=pkg["rub"], tokens=pkg["tokens"], status="pending",
+                )
+                s.add(pay); s.commit(); s.refresh(pay)
+            pay_id = pay.id
+
+        try:
+            result = await billing.charge_recurring(
+                payment_method_id=sub.payment_method_id,
+                amount_rub=pkg["rub"],
+                description=f"Автопост: продление подписки «{pkg['title']}»",
+                user_id=uid,
+                package_id=pkg_id,
+                label=label,
+                idempotence_key=period_key,
+                user_email=user_email,
+            )
+            status = result.get("status", "")
+            paid = bool(result.get("paid"))
+        except Exception as e:
+            # ВАЖНО отличать "YooKassa ответила отказом" от "мы не узнали
+            # исход". При обрыве связи деньги могли уже списаться, и помечать
+            # такой платёж failed нельзя -- он остаётся pending, а повторная
+            # попытка с тем же Idempotence-Key вернёт настоящий статус.
+            status, paid, result, outcome_known = "error", False, {}, False
+            logger.warning(f"Подписка {sub_id}: списание не удалось: {e}")
+        else:
+            outcome_known = True
+
+        with session() as s:
+            sub = s.get(Subscription, sub_id)
+            pay = s.get(_Payment, pay_id)
+            if not sub:
+                continue
+            if status == "succeeded" and paid:
+                if pay:
+                    pay.status = "paid"
+                    pay.paid_at = datetime.utcnow()
+                    pay.operation_id = result.get("id", "")
+                    s.add(pay)
+                u = s.get(User, sub.user_id)
+                if u:
+                    u.token_balance += pkg["tokens"]
+                    s.add(u)
+                sub.last_period_key = period_key
+                sub.period_no += 1
+                sub.next_charge_at = datetime.utcnow() + timedelta(days=config.SUBSCRIPTION_PERIOD_DAYS)
+                sub.fail_count = 0
+                sub.last_error = ""
+                s.add(sub); s.commit()
+                logger.info(f"Подписка {sub_id} продлена: пользователь {sub.user_id} +{pkg['tokens']} токенов")
+            else:
+                # failed ставим только когда исход точно известен и он
+                # отрицательный. Иначе оставляем pending -- см. выше.
+                if pay and outcome_known and pay.status == "pending":
+                    pay.status = "failed"
+                    s.add(pay)
+                sub.fail_count += 1
+                sub.last_error = f"status={status}"
+                if sub.fail_count >= config.SUBSCRIPTION_MAX_FAILS:
+                    sub.status = "suspended"
+                    logger.warning(f"Подписка {sub_id} приостановлена после {sub.fail_count} неудач")
+                else:
+                    # Повторим позже, тот же period_no -> тот же Idempotence-Key.
+                    sub.next_charge_at = datetime.utcnow() + timedelta(hours=config.SUBSCRIPTION_RETRY_HOURS)
+                s.add(sub); s.commit()
+
+
 async def tick():
     now = datetime.utcnow()
 

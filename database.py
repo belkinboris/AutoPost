@@ -288,6 +288,42 @@ class IdempotencyKey(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class Subscription(SQLModel, table=True):
+    """
+    Подписка на тариф: регулярное списание через YooKassa сохранённым методом
+    оплаты (см. billing.charge_recurring и tasks.charge_due_subscriptions).
+
+    Новая отдельная таблица -- та же безопасная схема, что PostApproval/
+    TelegramIdentity/IdempotencyKey: создаётся через create_all(), без ALTER
+    TABLE на User/Payment и других уже задеплоенных таблицах. В частности,
+    payment_method_id намеренно живёт здесь, а не новой колонкой в Payment.
+
+    status:
+      active     -- списываем в next_charge_at
+      cancelled  -- пользователь отменил, больше не списываем; оплаченный
+                    период при этом не отбираем (см. next_charge_at)
+      suspended  -- подряд не прошло SUBSCRIPTION_MAX_FAILS списаний
+                    (нет денег/карта отвязана), автосписания прекращены
+
+    last_period_key -- защита от двойного списания: ключ оплаченного периода
+    (id подписки + порядковый номер периода). Перед списанием сверяем его и
+    используем как Idempotence-Key для YooKassa, поэтому повторный запуск
+    джобы или её параллельный инстанс не спишут деньги дважды.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    package_id: str
+    payment_method_id: str = Field(default="", index=True)
+    status: str = Field(default="active", index=True)
+    period_no: int = 1
+    last_period_key: str = ""
+    next_charge_at: Optional[datetime] = Field(default=None, index=True)
+    fail_count: int = 0
+    last_error: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    cancelled_at: Optional[datetime] = None
+
+
 def _add_missing_columns():
     """
     Точечный самолечащийся фикс уже случившегося дрейфа схемы -- НЕ общая
