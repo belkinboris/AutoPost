@@ -1830,26 +1830,49 @@ async def verify_tg_username(data: _TgVerifyIn, user: User = Depends(current_use
     }
 
 
+# КРИТИЧНО: HTML-страницы отдаём с запретом кэширования.
+#
+# Версии в ссылках на скрипты (?v=20260726c) обновляют ТОЛЬКО сами скрипты, и
+# то лишь при условии, что браузер перечитал index.html. Сам index.html
+# отдавался вообще без заголовков кэша -- Safari и мобильные браузеры держат
+# такую страницу у себя сколь угодно долго и продолжают запрашивать СТАРЫЕ
+# версии скриптов. В результате свежий деплой пользователю просто не виден, и
+# никакая смена ?v= этого не пробивает: старый index.html о новой версии не
+# знает. Ровно так новый блок на странице тарифов не доехал до пользователя.
+#
+# no-cache (а не no-store) -- страница по-прежнему может отдаваться как 304
+# по ETag, если реально не менялась, то есть трафик не растёт.
+_HTML_NO_CACHE = {
+    "Cache-Control": "no-cache, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+def _html(path: str) -> FileResponse:
+    return FileResponse(path, headers=_HTML_NO_CACHE)
+
+
 @app.get("/legal/offer")
 def legal_offer():
-    return FileResponse("static/legal/offer.html")
+    return _html("static/legal/offer.html")
 
 @app.get("/legal/privacy")
 def legal_privacy():
-    return FileResponse("static/legal/privacy.html")
+    return _html("static/legal/privacy.html")
 
 @app.get("/legal/refund")
 def legal_refund():
-    return FileResponse("static/legal/refund.html")
+    return _html("static/legal/refund.html")
 
 
 @app.get("/landing")
 def landing():
-    return FileResponse("static/landing.html")
+    return _html("static/landing.html")
 
 @app.get("/how-to")
 def how_to():
-    return FileResponse("static/how-to.html")
+    return _html("static/how-to.html")
 
 @app.get("/robots.txt")
 def robots_txt():
@@ -1861,7 +1884,7 @@ def sitemap_xml():
 
 @app.get("/")
 def index():
-    return FileResponse("static/index.html")
+    return _html("static/index.html")
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
