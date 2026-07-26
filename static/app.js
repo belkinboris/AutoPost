@@ -2152,12 +2152,30 @@ function renderQueueBody(){
     </div>`;
   }
   $("postList").innerHTML=html;
+  _scheduleFirstPostsPoll(pending.length);
   startNearestCountdown();
   // Тикает все карточки с реальным дедлайном автопубликации (см.
   // data-approval-countdown в renderPostCard). Функция сама выходит, если
   // таких карточек на экране нет.
   startDashboardCountdowns();
   _scheduleApprovalRefresh(pending);
+}
+
+// Пока ждём первые посты после подключения канала -- сами перечитываем
+// очередь. Пользователь не должен догадываться, что нужно перезагрузить
+// страницу; именно на этом он и спотыкался.
+let _firstPostsPollTimer=null;
+function _scheduleFirstPostsPoll(pendingCount){
+  if(_firstPostsPollTimer){clearTimeout(_firstPostsPollTimer);_firstPostsPollTimer=null;}
+  if(!App._justConnectedAt) return;
+  const waited = Date.now() - App._justConnectedAt;
+  if(pendingCount > 0 || waited > 5*60*1000){
+    App._justConnectedAt = null;   // дождались или перестаём ждать
+    return;
+  }
+  _firstPostsPollTimer=setTimeout(()=>{
+    if(App.tab==="queue") renderQueue();
+  }, 15000);
 }
 
 // Когда ближайший дедлайн автопубликации истекает, пост публикуется на
@@ -2207,6 +2225,21 @@ function _renderQueueStatus(c, pendingCount, opts){
       <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
         В очереди ${counter}. Сами по расписанию посты начнут появляться после подключения канала.
         А написать пост можно прямо сейчас — кнопкой ниже.
+      </div>
+    </div>`;
+  }
+
+  // Только что подключили канал, а постов ещё нет: генерация идёт на сервере
+  // и занимает минуту-две. Без этого экран выглядел так, будто ничего не
+  // произошло, и приходилось перезагружать страницу вручную.
+  const justConnected = App._justConnectedAt && (Date.now() - App._justConnectedAt < 5*60*1000);
+  if(justConnected && pendingCount === 0){
+    return `<div class="card" style="background:var(--green-bg,var(--surface2));border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px">
+        <span class="spinner"></span> Канал подключён — готовим первые посты
+      </div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:4px">
+        Обычно это занимает одну-две минуты. Страница обновится сама, перезагружать не нужно.
       </div>
     </div>`;
   }
@@ -2781,8 +2814,14 @@ async function verifyChannel(){
     if(r.ok){
       App._chan.tg_chat=chat;App._chan.verified=true;
       trackGoal("telegram_verified",{channel_id:App._chan.id});
-      toast("Канал проверен ✓","ok");
-      renderSettings(); // перерисуем — покажет статус «Проверено»
+      toast("Канал подключён ✓ Готовим первые посты","ok");
+      // Раньше пользователь оставался в настройках и не понимал, что дальше:
+      // очередь не обновлялась, сообщений не было, посты появлялись только
+      // после ручной перезагрузки страницы. Теперь сразу показываем очередь
+      // и явно говорим, что посты готовятся (генерация идёт на сервере в
+      // течение минуты-двух, см. tick).
+      App._justConnectedAt = Date.now();
+      setTab("queue");
     } else {
       const msg=$("verMsg");if(msg){msg.textContent=r.message;msg.style.color="var(--red)";}
       if(btn) btn.innerHTML="Проверить";
