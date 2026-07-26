@@ -999,6 +999,9 @@ async def charge_due_subscriptions():
 
     if not billing.is_configured():
         return
+    if not config.SUBSCRIPTION_ENABLED:
+        # Рекуррент не согласован с ЮKassa -- списывать нечем и незачем.
+        return
 
     now = datetime.utcnow()
     with session() as s:

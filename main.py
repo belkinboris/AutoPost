@@ -251,6 +251,7 @@ def get_config():
         "min_queue": tasks.MIN_QUEUE,
         # Нужен фронту, чтобы честно назвать периодичность списания до оплаты.
         "subscription_period_days": config.SUBSCRIPTION_PERIOD_DAYS,
+        "subscription_enabled": config.SUBSCRIPTION_ENABLED,
         "yookassa_enabled": billing.is_configured(),
         # Старый ключ оставлен для совместимости с фронтом, если браузер закэширует app.js.
         "yoomoney_enabled": billing.is_configured(),
@@ -1218,11 +1219,18 @@ def get_subscription(user: User = Depends(current_user)):
 @app.delete("/api/subscription")
 def cancel_subscription(user: User = Depends(current_user)):
     """
-    Отмена подписки: прекращаем автосписания.
+    Отмена подписки: прекращаем автосписания И отвязываем сохранённый способ
+    оплаты.
+
+    Очистка payment_method_id здесь обязательна, а не косметика: ЮKassa
+    подключает рекуррентные платежи только тем магазинам, где покупатель может
+    самостоятельно отвязать карту, не обращаясь в поддержку. Эта ручка (и
+    кнопка «Отменить подписку» в кабинете, которая её дёргает) -- и есть
+    выполнение того требования. После неё сохранённым методом физически нечем
+    списать: продление берёт payment_method_id именно отсюда.
 
     Уже оплаченные токены НЕ отбираем и подписку не удаляем задним числом --
-    человек оплатил текущий период и должен им пользоваться. Просто больше
-    никогда не списываем.
+    человек оплатил текущий период и должен им пользоваться.
     """
     from database import Subscription
     with session() as s:
@@ -1238,9 +1246,13 @@ def cancel_subscription(user: User = Depends(current_user)):
             sub.status = "cancelled"
             sub.cancelled_at = datetime.utcnow()
             sub.next_charge_at = None
+            sub.payment_method_id = ""   # отвязка карты
             s.add(sub)
         s.commit()
-        logger.info(f"Подписка пользователя {user.id} отменена ({len(subs)} шт.)")
+        logger.info(
+            f"Подписка пользователя {user.id} отменена ({len(subs)} шт.), "
+            f"сохранённый способ оплаты отвязан"
+        )
     return {"ok": True}
 
 
@@ -1259,6 +1271,9 @@ def _activate_subscription(s, pay: Payment, yk_payment: dict) -> None:
     просто остаётся на разовой оплате.
     """
     from database import Subscription
+    if not config.SUBSCRIPTION_ENABLED:
+        # Разовый режим: токены уже начислены выше, подписке взяться неоткуда.
+        return
     try:
         method_id = billing.extract_saved_method_id(yk_payment)
         now = datetime.utcnow()
@@ -1335,7 +1350,11 @@ async def buy(data: BuyIn, user: User = Depends(current_user)):
         raise HTTPException(400, "Приём платежей не настроен")
 
     label = f"u{user.id}-{data.package_id}-{secrets.token_hex(6)}"
-    description = f"Автопост: подписка «{pkg['title']}», {config.SUBSCRIPTION_PERIOD_DAYS} дн."
+    description = (
+        f"Автопост: подписка «{pkg['title']}», {config.SUBSCRIPTION_PERIOD_DAYS} дн."
+        if config.SUBSCRIPTION_ENABLED
+        else f"Автопост: пакет «{pkg['title']}» ({pkg['tokens']} токенов)"
+    )
 
     with session() as s:
         pay = Payment(
@@ -1361,7 +1380,9 @@ async def buy(data: BuyIn, user: User = Depends(current_user)):
             user_email=user.email,
             # Первый платёж подписки: просим YooKassa сохранить метод оплаты,
             # иначе продлевать будет нечем (см. billing.charge_recurring).
-            save_payment_method=True,
+            # Пока рекуррент не согласован с ЮKassa -- не просим вовсе, чтобы
+            # не создавать видимость подписки там, где её не будет.
+            save_payment_method=config.SUBSCRIPTION_ENABLED,
         )
     except billing.YooKassaError as exc:
         with session() as s:

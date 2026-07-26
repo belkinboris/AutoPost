@@ -2857,17 +2857,17 @@ async function renderBilling(){
     ${_subscriptionCard(sub)}
     ${plans.some(p=>p.regular)?`<div class="promo-bar">
       <b>Цены на время запуска.</b> Сервис ещё развивается — пока он в раннем доступе, тарифы держим ниже
-      обычных. Цена, по которой вы подписались, за вами сохранится.
+      обычных.${App.cfg?.subscription_enabled?" Цена, по которой вы подписались, за вами сохранится.":""}
     </div>`:""}
     <div class="grid grid-2" style="margin-bottom:16px">
       ${plans.map(p=>`<div class="price-card" style="position:relative;${p.popular?"border-color:var(--accent)":""}">
         ${p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
         <div class="p-name">${p.name}</div>
         ${p.regular?`<div class="p-regular">потом ${_rub(p.regular)} ₽</div>`:""}
-        <div class="p-price" style="font-size:24px">${_rub(p.price)} ₽/мес</div>
+        <div class="p-price" style="font-size:24px">${_rub(p.price)}\u00A0₽${App.cfg?.subscription_enabled?"/мес":""}</div>
         <div class="p-tokens" style="line-height:1.8">
           📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${_plural(p.channels,"канал","канала","каналов")}`}<br>
-          ✦ ${p.postsMin}–${p.postsMax} постов/мес</div>
+          ✦ ${p.postsMin}–${p.postsMax} постов${App.cfg?.subscription_enabled?"/мес":""}</div>
         <button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>
       </div>`).join("")}
     </div>
@@ -2947,12 +2947,21 @@ function _plural(n, one, few, many){
 function _subscriptionCard(sub){
   const days=App.cfg?.subscription_period_days||30;
   if(!sub){
-    // Подписки нет -- честно предупреждаем о характере платежа до того, как
-    // человек нажмёт «Выбрать», а не только в момент подтверждения.
+    // Пока рекуррент не согласован с ЮKassa, обещать автосписание нельзя --
+    // его не будет. Тогда это честная разовая оплата пакета.
+    if(!App.cfg?.subscription_enabled){
+      return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:16px;padding:14px 16px">
+        <div style="font-size:13px;color:var(--text-dim);line-height:1.6">
+          Оплата разовая: списываем один раз и сразу начисляем посты. Ничего не спишется автоматически —
+          когда посты закончатся, просто оплатите снова.
+        </div></div>`;
+    }
+    // Честно предупреждаем о характере платежа до того, как человек нажмёт
+    // «Выбрать», а не только в момент подтверждения.
     return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:16px;padding:14px 16px">
       <div style="font-size:13px;color:var(--text-dim);line-height:1.6">
         Тарифы — это подписка: плата списывается автоматически раз в ${days} дней, пока вы её не отмените.
-        Отменить можно в любой момент здесь же, деньги за оплаченный период не сгорают.
+        Отменить подписку и отвязать карту можно в любой момент здесь же, деньги за оплаченный период не сгорают.
       </div></div>`;
   }
   const when=sub.next_charge_at
@@ -2964,7 +2973,7 @@ function _subscriptionCard(sub){
       <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
         Списать оплату не получилось. Автосписания остановлены — выберите тариф ниже, чтобы возобновить подписку.
       </div>
-      <button class="btn-ghost btn-sm" style="margin-top:8px;padding:4px 0;color:var(--accent-dark)" onclick="cancelSubscription()">Отменить подписку</button>
+      <button class="btn-ghost btn-sm" style="margin-top:8px;padding:4px 0;color:var(--accent-dark)" onclick="cancelSubscription()">Отменить подписку и отвязать карту</button>
     </div>`;
   }
   return `<div class="card" style="background:var(--green-bg,var(--surface2));border:none;margin-bottom:16px;padding:14px 16px">
@@ -2972,12 +2981,17 @@ function _subscriptionCard(sub){
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
       Следующее списание ${sub.rub?`${sub.rub} ₽ `:""}— ${when} Дальше каждые ${days} дней, пока не отмените.
     </div>
-    <button class="btn-ghost btn-sm" style="margin-top:8px;padding:4px 0;color:var(--red,#c0392b)" onclick="cancelSubscription()">Отменить подписку</button>
+    <button class="btn-ghost btn-sm" style="margin-top:8px;padding:4px 0;color:var(--red,#c0392b)" onclick="cancelSubscription()">Отменить подписку и отвязать карту</button>
   </div>`;
 }
 
 async function cancelSubscription(){
-  if(!confirm("Отменить подписку?\n\nАвтосписания прекратятся. Оплаченный период и уже начисленные посты останутся при вас.")) return;
+  if(!confirm(
+    "Отменить подписку и отвязать карту?\n\n"+
+    "Автосписания прекратятся, сохранённый способ оплаты будет удалён — "+
+    "списать по нему больше не сможем.\n\n"+
+    "Оплаченный период и уже начисленные посты останутся при вас."
+  )) return;
   try{
     await api("DELETE","/subscription");
     logProductEvent("subscription_cancelled");
@@ -2996,12 +3010,12 @@ async function buy(pid){
   // выглядело ловушкой.
   const plan=(App.cfg?.packages||[]).find(p=>p.id===pid);
   const days=App.cfg?.subscription_period_days||30;
-  if(plan){
+  if(plan && App.cfg?.subscription_enabled){
     const ok=confirm(
       `Тариф «${plan.title}» — ${plan.rub} ₽ каждые ${days} дней.\n\n`+
       `Первый платёж спишется сейчас, дальше — автоматически раз в ${days} дней, `+
       `пока вы не отмените подписку.\n\n`+
-      `Отменить можно в любой момент на этой же странице, кнопкой «Отменить подписку».`
+      `Отменить и отвязать карту можно в любой момент на этой же странице.`
     );
     if(!ok){ logProductEvent("payment_declined_at_confirm", pid); return; }
   }
