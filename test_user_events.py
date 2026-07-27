@@ -15,6 +15,12 @@ import os
 
 import httpx
 
+# Клиент берём из conftest: он ходит в приложение, поднятое в этом же процессе.
+# Раньше здесь создавался обычный httpx.AsyncClient и запрос уходил в сеть на
+# localhost:8000 -- под pytest это ConnectError, работало только с сервером,
+# запущенным руками.
+from conftest import make_client
+
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
 INTERNAL_TOKEN = os.environ.get("TRUEPOST_INTERNAL_API_TOKEN", "test-token")
 
@@ -67,7 +73,7 @@ def _find_journey_key(journeys: dict, email_marker_events: list[dict]) -> str:
 
 
 async def test_1_requires_token():
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with make_client() as client:
         r = await client.get(f"{BASE_URL}/api/internal/user-events")
         assert r.status_code == 401, f"без токена должен быть 401, получили {r.status_code}"
         r = await client.get(
@@ -79,7 +85,7 @@ async def test_1_requires_token():
 
 
 async def test_2_registration_event_present_no_pii():
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with make_client() as client:
         email = _email("t2")
         await _register(client, email)
         data = await _events(client)
@@ -98,7 +104,7 @@ async def test_2_registration_event_present_no_pii():
 
 
 async def test_3_product_events_mapped():
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with make_client() as client:
         token = (await _register(client, _email("t3")))["token"]
         await _product_event(client, token, "onboarding_choice_selected", "generate_first_post")
         await _product_event(client, token, "first_post_feedback", "bad")
@@ -134,7 +140,7 @@ async def test_3_product_events_mapped():
 
 
 async def test_4_noise_events_filtered():
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with make_client() as client:
         token = (await _register(client, _email("t4")))["token"]
         await _product_event(client, token, "quota_warning_seen")
         await _product_event(client, token, "limit_reached")
@@ -147,7 +153,7 @@ async def test_4_noise_events_filtered():
 
 
 async def test_5_event_ids_stable_and_unique():
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with make_client() as client:
         token = (await _register(client, _email("t5")))["token"]
         await _product_event(client, token, "pricing_viewed")
         d1 = await _events(client)
@@ -160,7 +166,7 @@ async def test_5_event_ids_stable_and_unique():
 
 
 async def test_6_limit_and_period_validation():
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with make_client() as client:
         data = await _events(client, limit=1)
         assert len(data["events"]) <= 1, "limit=1 должен ограничивать выдачу"
         r = await client.get(
@@ -189,7 +195,7 @@ async def test_7_no_post_import():
 
 async def test_8_user_key_consistent_with_journeys():
     """user_key одного юзера должен совпадать между user-events и user-journeys."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with make_client() as client:
         token = (await _register(client, _email("t8")))["token"]
         await _product_event(client, token, "onboarding_choice_selected", "skip")
 
@@ -218,7 +224,7 @@ async def test_8_user_key_consistent_with_journeys():
 
 async def test_9_journeys_regression():
     """Регрессия: user-journeys продолжает работать после добавления модуля."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with make_client() as client:
         r = await client.get(
             f"{BASE_URL}/api/internal/user-journeys",
             params={"period_hours": 24},
