@@ -226,9 +226,9 @@ function _renderQueueStatus(c, pendingCount, opts){
   // видимый таймер. Гарантия при этом не ослаблена -- молча по-прежнему не
   // уходит ничего.
   return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
-    <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Вы видите каждый пост до публикации</div>
+    <div style="font-size:13px;color:var(--accent-dark);font-weight:600">В очереди ${counter}</div>
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
-      В очереди ${counter}. ${App.user?.tg_chat_id
+      ${App.user?.tg_chat_id
         ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Telegram."
         : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки."} ${refillLine}
     </div>
