@@ -1136,7 +1136,7 @@ async function renderConnectChannel(){
     <div class="hint" style="margin-top:14px;line-height:1.7">
       1. Откройте канал → Управление → Администраторы<br>
       2. Добавьте <b>@${esc(botUsername)}</b><br>
-      3. Включи право «Публиковать сообщения»<br>
+      3. Включите право «Публиковать сообщения»<br>
       <a href="/how-to" target="_blank" rel="noopener">Подробная инструкция с картинками →</a>
     </div>
 
@@ -1446,7 +1446,7 @@ function renderNewChannel(){
           <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--surface2);border-radius:12px">
             <span style="font-size:18px">🕓</span>
             <div style="flex:1;font-size:13px;color:var(--text-dim);line-height:1.5">
-              Канал подключишь позже в настройках. Сейчас ИИ покажет варианты постов.
+              Канал подключите позже в настройках. Сейчас ИИ покажет варианты постов.
             </div>
             <button class="btn-ghost btn-sm" onclick="ncShowVerify()" style="font-size:12px;color:var(--accent);white-space:nowrap">Подключить</button>
           </div>
@@ -1454,7 +1454,7 @@ function renderNewChannel(){
       </div>
 
       <label class="field mt"><span class="field-label">О чём канал</span>
-        <textarea id="nc_about" rows="3" placeholder="Опиши идею — о чём, для кого, что интересно аудитории"></textarea></label>
+        <textarea id="nc_about" rows="3" placeholder="Опишите идею — о чём, для кого, что интересно аудитории"></textarea></label>
       <div class="hint"><b>Примеры:</b><br>
         · <i>Крипта: новости, разбор монет, инвестиционные идеи</i><br>
         · <i>M&A в России: кто купил кого и зачем, простым языком</i><br>
@@ -2655,7 +2655,7 @@ async function renderAdvanced(){
     <div class="card">
       <div class="card-title">ИИ-консультант</div>
       <div class="hint" style="margin-top:0;margin-bottom:12px">
-        Объясни как хочешь чтобы писались посты — ИИ задаст вопросы и предложит конкретные правила.
+        Объясните, как хотите, чтобы писались посты — ИИ задаст вопросы и предложит конкретные правила.
       </div>
       <div id="consult_msgs" style="max-height:260px;overflow-y:auto;margin-bottom:10px;display:flex;flex-direction:column;gap:8px"></div>
       <div class="row" style="gap:8px">
@@ -2942,9 +2942,9 @@ async function renderBilling(){
         <button class="btn-outline btn-sm" onclick="navigator.clipboard.writeText('${esc(code)}').then(()=>toast('Скопировано','ok'))">Копировать</button>
       </div>
       <div style="font-size:13px;color:var(--text-dim);background:var(--surface2);border-radius:10px;padding:12px 14px;line-height:1.7">
-        1. Открой <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">@maintrpost_bot</a><br>
+        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">@maintrpost_bot</a><br>
         2. «Открыть АвтоПост» → Зарегистрироваться<br>
-        3. Ввести реферальный код: <b>${esc(code)}</b>
+        3. Введите реферальный код: <b>${esc(code)}</b>
       </div>
       <div class="hint" style="margin-top:8px">Приглашений: <b>${me.referrals_count||0}</b></div>`;
   }catch(_){}

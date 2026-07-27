@@ -24,7 +24,7 @@ function renderNewChannel(){
           <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--surface2);border-radius:12px">
             <span style="font-size:18px">🕓</span>
             <div style="flex:1;font-size:13px;color:var(--text-dim);line-height:1.5">
-              Канал подключишь позже в настройках. Сейчас ИИ покажет варианты постов.
+              Канал подключите позже в настройках. Сейчас ИИ покажет варианты постов.
             </div>
             <button class="btn-ghost btn-sm" onclick="ncShowVerify()" style="font-size:12px;color:var(--accent);white-space:nowrap">Подключить</button>
           </div>
@@ -32,7 +32,7 @@ function renderNewChannel(){
       </div>
 
       <label class="field mt"><span class="field-label">О чём канал</span>
-        <textarea id="nc_about" rows="3" placeholder="Опиши идею — о чём, для кого, что интересно аудитории"></textarea></label>
+        <textarea id="nc_about" rows="3" placeholder="Опишите идею — о чём, для кого, что интересно аудитории"></textarea></label>
       <div class="hint"><b>Примеры:</b><br>
         · <i>Крипта: новости, разбор монет, инвестиционные идеи</i><br>
         · <i>M&A в России: кто купил кого и зачем, простым языком</i><br>

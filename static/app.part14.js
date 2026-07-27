@@ -62,9 +62,9 @@ async function renderBilling(){
         <button class="btn-outline btn-sm" onclick="navigator.clipboard.writeText('${esc(code)}').then(()=>toast('Скопировано','ok'))">Копировать</button>
       </div>
       <div style="font-size:13px;color:var(--text-dim);background:var(--surface2);border-radius:10px;padding:12px 14px;line-height:1.7">
-        1. Открой <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">@maintrpost_bot</a><br>
+        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">@maintrpost_bot</a><br>
         2. «Открыть АвтоПост» → Зарегистрироваться<br>
-        3. Ввести реферальный код: <b>${esc(code)}</b>
+        3. Введите реферальный код: <b>${esc(code)}</b>
       </div>
       <div class="hint" style="margin-top:8px">Приглашений: <b>${me.referrals_count||0}</b></div>`;
   }catch(_){}

@@ -94,7 +94,7 @@ async function renderConnectChannel(){
     <div class="hint" style="margin-top:14px;line-height:1.7">
       1. Откройте канал → Управление → Администраторы<br>
       2. Добавьте <b>@${esc(botUsername)}</b><br>
-      3. Включи право «Публиковать сообщения»<br>
+      3. Включите право «Публиковать сообщения»<br>
       <a href="/how-to" target="_blank" rel="noopener">Подробная инструкция с картинками →</a>
     </div>
 
