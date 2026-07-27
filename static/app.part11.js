@@ -216,10 +216,19 @@ function _renderQueueStatus(c, pendingCount, opts){
     ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
     : `Очередь заполнена. Как только опубликуете один пост, мы подготовим следующий.`;
 
+  // КРИТИЧНО: здесь было «Ни один пост не попадёт в канал, пока вы не нажмёте
+  // „Опубликовать“» -- и это неправда для основного сценария. Пост, который мы
+  // пишем по расписанию, получает PostApproval с дедлайном (см. needs_approval
+  // в tasks.py -- таймер заводится ВСЕГДА, независимо от Telegram), и по
+  // истечении таймера публикуется сам. Правда была написана только в свёрнутом
+  // «Подробнее», а на виду стояло обещание, которого система не выполняет.
+  // Теперь на виду то же, что показывает карточка поста: либо кнопка, либо
+  // видимый таймер. Гарантия при этом не ослаблена -- молча по-прежнему не
+  // уходит ничего.
   return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
-    <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Вы решаете, что публиковать</div>
+    <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Вы видите каждый пост до публикации</div>
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
-      В очереди ${counter}. Ни один пост не попадёт в канал, пока вы не нажмёте «Опубликовать». ${refillLine}
+      В очереди ${counter}. Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы написали его по расписанию. ${refillLine}
     </div>
     <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
       onclick="toggleQueueHelp()" id="queue_help_btn">Подробнее ▾</button>
