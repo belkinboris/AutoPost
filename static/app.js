@@ -767,7 +767,7 @@ function renderNewChannelSettings(){
 
     <div class="card mt">
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал автоматически по расписанию. Если выключено — каждый новый пост сначала можно подтвердить в очереди на сайте, а если подключены уведомления — ещё и в Telegram с кнопками «Опубликовать», «Отклонить», «Редактировать». Не отреагируете — опубликуется сам через ${App.cfg?.soft_control_minutes||30} мин.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="ncs_auto"><span class="slider"></span></label>
       </div>
     </div>
@@ -2293,14 +2293,18 @@ function _renderQueueStatus(c, pendingCount, opts){
   return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
     <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Вы видите каждый пост до публикации</div>
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
-      В очереди ${counter}. Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы написали его по расписанию. ${refillLine}
+      В очереди ${counter}. ${App.user?.tg_chat_id
+        ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Telegram."
+        : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки."} ${refillLine}
     </div>
     <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
       onclick="toggleQueueHelp()" id="queue_help_btn">Подробнее ▾</button>
     <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
       Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>
-      У поста, написанного по расписанию, есть обратный отсчёт: если вы не отреагируете за ${softControlMin} мин, мы опубликуем его сами. Такой пост видно по таймеру на карточке.<br>
-      Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>
+      ${App.user?.tg_chat_id
+        ? `Пост по расписанию мы присылаем вам в Telegram, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
+      Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>`
+        : `Пока уведомления не подключены, обратный отсчёт не запускается: предупредить вас нам нечем, поэтому ни один пост не уходит в канал сам. Каждый ждёт вашей кнопки сколько угодно.<br>`}
       ${App.user?.tg_chat_id
         ? `Мы дублируем такие посты вам в Telegram — можно решать с телефона, не заходя на сайт.`
         : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Telegram</a>, чтобы решать с телефона, не заходя на сайт.`}
@@ -2503,7 +2507,7 @@ function renderSettings(){
     <div class="card" id="settings_automation_card">
       <div class="card-title">Автоматизация</div>
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал автоматически по расписанию. Если выключено — каждый новый пост сначала можно подтвердить в очереди на сайте, а если подключены уведомления — ещё и в Telegram с кнопками «Опубликовать», «Отклонить», «Редактировать». Не отреагируете — опубликуется сам через ${App.cfg?.soft_control_minutes||30} мин.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="sw_auto" ${c.auto_publish?"checked":""}><span class="slider"></span></label>
       </div>
       <div class="toggle-row">

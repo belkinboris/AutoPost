@@ -77,6 +77,11 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 «Опубликовать», или истёк **явно показанный** таймер подтверждения. Любая
 правка, которая это ослабляет, — ошибка.
 
+«Явно показанный» — не фигура речи. Таймер (`PostApproval`) заводится
+только когда карточка реально доставлена в Telegram: нет уведомлений или
+доставка провалилась — таймера нет, пост ждёт решения сколько угодно.
+Тесты в `test_approval_timer.py`.
+
 ### 5. Интерфейс не обещает того, чего система не делает
 
 Проверено на своих же граблях: «опубликуется сам через 30 мин» показывалось
@@ -114,7 +119,7 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 89 passed, 11 skipped
+python3 -m pytest -q          # ожидается 93 passed, 11 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__
@@ -151,7 +156,7 @@ pw.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/
 
 ## Известные проблемы (честно)
 
-- **Тесты.** `python3 -m pytest -q` даёт 89 прошедших и 11 пропущенных
+- **Тесты.** `python3 -m pytest -q` даёт 93 прошедших и 11 пропущенных
   (27.07). Пропущены `test_quickstart_flow.py` и `test_topic_validation.py`:
   оба ходят в живую модель и тратят токены, запуск по `RUN_LLM_TESTS=1`.
   Покрыты удаление аккаунта, автосписание и дедупликация — то есть всё, что
