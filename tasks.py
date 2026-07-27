@@ -192,9 +192,14 @@ async def generate_for_channel(channel_id: int, topic: str = "", force_pending: 
         # но только если у канала ещё нет ни одного поста (это значит он
         # только что создан в онбординге, а не существующий канал
         # пользователя, тему которого позже отредактировали в настройках).
+        # КРИТИЧНО: при classification_unavailable удалять НЕЧЕГО. Этот статус
+        # означает, что до модели не дозвонились -- провайдер лежит, таймаут,
+        # кончился баланс. Тема пользователя не отклонена, она вообще не
+        # проверялась. Удалить в этот момент только что созданный канал --
+        # значит наказать человека за наш сбой и стереть его работу.
         with session() as s:
             existing_posts = s.exec(select(Post).where(Post.channel_id == channel_id)).first()
-            if not existing_posts:
+            if not existing_posts and classification != "classification_unavailable":
                 ch = s.get(Channel, channel_id)
                 if ch:
                     logger.info(f"Канал {channel_id}: удаляю draft-канал из-за отклонённой темы ({classification})")

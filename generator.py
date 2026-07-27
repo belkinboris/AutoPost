@@ -173,7 +173,13 @@ async def classify_topic(topic: str) -> str:
     """
     Классифицирует тему перед генерацией (Part 1 задачи).
     Возвращает одно из: valid_topic, ambiguous_intimate_topic, unclear_topic,
-    adult_or_sexual_topic, unsafe_topic, unsupported_topic, classification_failed.
+    adult_or_sexual_topic, unsafe_topic, unsupported_topic, classification_failed,
+    classification_unavailable.
+
+    Два последних статуса различаются намеренно: classification_failed --
+    модель ответила, но невнятно (переформулировать тему осмысленно);
+    classification_unavailable -- до модели не дозвонились (переформулировать
+    бесполезно, проблема на нашей стороне).
 
     ambiguous_intimate_topic (Task E): серая зона интимной/сексуальной темы —
     провокационная формулировка, но возможен легитимный образовательный
@@ -204,8 +210,17 @@ async def classify_topic(topic: str) -> str:
         logger.warning(f"classify_topic: неожиданный ответ классификатора «{text}» для темы «{topic}»")
         return "classification_failed"
     except Exception as e:
+        # ВАЖНО: это НЕ то же самое, что «модель ответила непонятно» выше.
+        # Сюда попадают наши собственные сбои: провайдер недоступен, таймаут,
+        # ошибка авторизации, кончился баланс. Тема пользователя тут ни при
+        # чём, и просить её переформулировать -- врать: сколько ни переписывай,
+        # результат будет тот же. Проверено на первом входе с пустыми ключами:
+        # пользователь получал «Попробуйте переформулировать» и мог крутиться
+        # в этом бесконечно, хотя в логе у нас честно стояло «Ошибка
+        # авторизации ИИ». Статус блокирующий, как и classification_failed:
+        # непроверенную тему всё равно не пропускаем.
         logger.warning(f"Ошибка классификации темы «{topic}»: {e}")
-        return "classification_failed"
+        return "classification_unavailable"
 
 
 _REJECTION_MESSAGES = {
@@ -214,6 +229,9 @@ _REJECTION_MESSAGES = {
     "unclear_topic": "Не понял тему. Напишите проще: например «M&A сделки в России», «новости крипты», «канал про Roblox».",
     "unsupported_topic": "Не понял тему. Напишите проще: например «M&A сделки в России», «новости крипты», «канал про Roblox».",
     "classification_failed": "Не удалось проверить тему. Попробуйте переформулировать.",
+    # Наш сбой, а не тема пользователя. Формулировка прямо говорит, чья это
+    # проблема, и что делать: ждать, а не переписывать тему.
+    "classification_unavailable": "Не получилось обратиться к ИИ — это на нашей стороне. Попробуйте ещё раз через минуту.",
 }
 
 # Task E: ambiguous_intimate_topic — это НЕ rejection, это уточняющий вопрос.

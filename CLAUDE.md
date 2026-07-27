@@ -114,7 +114,7 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 88 passed, 6 skipped
+python3 -m pytest -q          # ожидается 94 passed, 6 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__
@@ -151,11 +151,13 @@ pw.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/
 
 ## Известные проблемы (честно)
 
-- **Тесты.** `python3 -m pytest -q` даёт 88 прошедших и 6 пропущенных
+- **Тесты.** `python3 -m pytest -q` даёт 94 прошедших и 6 пропущенных
   (27.07). Пропущен `test_quickstart_flow.py`: он тратит настоящие токены
   модели, запуск по `RUN_LLM_TESTS=1`. Покрыты удаление аккаунта,
   автосписание и дедупликация — то есть всё, что уже ломалось в проде.
   Не покрыт фронтенд: там регрессии по-прежнему ловятся только глазами.
+  **Пять тестов в `test_topic_validation.py` не проверяют ничего** —
+  возвращают список вместо `assert` и потому зелёные всегда (задача A6).
 - **Деплой ломается**: Timeweb периодически не может склонировать репозиторий
   с GitHub (таймаут к `github.com:443`). Это сеть на стороне хостинга, не
   авторизация. Обходной путь — ручная загрузка изменённых файлов.
