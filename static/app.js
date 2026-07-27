@@ -3344,9 +3344,27 @@ function initCookieBanner(){
   const b=document.createElement("div");
   b.style.cssText="position:fixed;bottom:0;left:0;right:0;background:#171b20;color:#e4e8ec;font-size:13px;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;z-index:9999;";
   b.innerHTML=`<span>Мы используем cookies. <a href="/legal/privacy" target="_blank" style="color:#d8b15e">Подробнее</a></span>
-    <button onclick="this.parentElement.remove();localStorage.setItem('cookie_ok','1')"
-      style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
+    <button style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
   document.body.appendChild(b);
+
+  // Плашка прижата к низу и лежит ПОВЕРХ страницы, а запаса снизу у body не
+  // было. Замерено на 390px: она целиком закрывала ссылки «Оферта»,
+  // «Политика конфиденциальности» и «Возврат» -- перекрытие 19px из 19, и
+  // прокрутить дальше нельзя, страница уже кончилась. То есть до нажатия
+  // «Понятно» юридические документы были недоступны с телефона вовсе, хотя
+  // сама плашка при этом предлагает прочитать «Подробнее».
+  // Отступ считаем по фактической высоте: на узком экране текст переносится,
+  // и плашка становится выше.
+  const pad=()=>{ document.body.style.paddingBottom=b.offsetHeight+"px"; };
+  pad();
+  window.addEventListener("resize",pad);
+
+  b.querySelector("button").onclick=()=>{
+    b.remove();
+    document.body.style.paddingBottom="";
+    window.removeEventListener("resize",pad);
+    localStorage.setItem("cookie_ok","1");
+  };
 }
 function initKeyboardDismiss(){
   document.addEventListener("touchstart",function(e){
