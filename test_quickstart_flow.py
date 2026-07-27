@@ -33,8 +33,18 @@ import string
 import sys
 
 import httpx
+import pytest
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
+
+# Единственный файл тестов, который тратит реальные деньги: сервер ходит в
+# модель на каждый прогон (валидация темы + генерация поста). Гонять это на
+# каждый коммит нельзя, поэтому по умолчанию пропускаем -- но пропускаем
+# ЯВНО, с причиной в выводе pytest, а не делаем вид, что проверено.
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("RUN_LLM_TESTS"),
+    reason="тратит токены модели; запуск: RUN_LLM_TESTS=1 python3 -m pytest test_quickstart_flow.py",
+)
 
 
 def _random_email() -> str:

@@ -88,7 +88,7 @@ function renderAuth(mode="login"){
   const tgInitData=_tgAuthInitData();
   $("app").innerHTML=`<div class="auth-wrap"><div class="auth-box">
     <div class="auth-logo">Авто<span>пост</span></div>
-    <div class="auth-sub">ИИ пишет посты для твоего Telegram-канала — автопилот или с вашим подтверждением</div>
+    <div class="auth-sub">ИИ пишет посты для вашего Telegram-канала — на автопилоте или после подтверждения</div>
     ${tgInitData?`<div class="card" style="text-align:center">
       <div style="font-size:14px;color:var(--text-dim);margin-bottom:14px">Вы открыли АвтоПост в Telegram</div>
       <button class="btn" style="width:100%;justify-content:center;padding:14px" id="tgContinueBtn" onclick="tgContinueAuth()">Продолжить как ${esc(_tgAuthFirstName())}</button>

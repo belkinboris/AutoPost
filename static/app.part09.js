@@ -95,9 +95,9 @@ async function ncGenerate(){
       if(loadEl){const fs=loadEl.querySelector("div");if(fs) fs.remove();}
       const errMsg=(e.message||"").toLowerCase();
       const human=errMsg.includes("токен")||errMsg.includes("limit")||errMsg.includes("закончил")
-        ? "Посты закончились. Пополни баланс в разделе «Тарифы»."
+        ? "Посты закончились. Пополните баланс в разделе «Тарифы»."
         : errMsg.includes("529")||errMsg.includes("overload")
-        ? "Серверы ИИ перегружены. Попробуй через минуту."
+        ? "Серверы ИИ перегружены. Попробуйте через минуту."
         : (e.message||"Не удалось сгенерировать");
       const el=document.createElement("div");
       el.className="onboard-card";
@@ -112,7 +112,7 @@ async function ncGenerate(){
   if(!okPosts.length){
     $("ob_posts").insertAdjacentHTML("beforeend",`
       <div style="padding:16px;background:var(--accent-soft);border-radius:var(--radius);text-align:center">
-        <div style="font-size:14px;color:var(--accent-dark);margin-bottom:10px">Не удалось создать посты. Проверь баланс в разделе «Тарифы».</div>
+        <div style="font-size:14px;color:var(--accent-dark);margin-bottom:10px">Не удалось создать посты. Проверьте баланс в разделе «Тарифы».</div>
         <button class="btn" onclick="go('billing')">Перейти к тарифам →</button>
       </div>`);
     btn.disabled=false;btn.textContent="✦ Попробовать снова";

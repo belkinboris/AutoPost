@@ -185,7 +185,7 @@ async function generateNow(){
       if(isLimit) logProductEvent("limit_reached");
       attempts++;
       if(is529&&attempts<3){toast(`Серверы заняты, повтор через 15с… (${attempts}/3)`);await new Promise(r=>setTimeout(r,15000));}
-      else{toast(is529?"Серверы перегружены. Попробуй позже.":e.message,"err");if(btn) btn.innerHTML="Создать";return;}
+      else{toast(is529?"Серверы перегружены. Попробуйте позже.":e.message,"err");if(btn) btn.innerHTML="Создать";return;}
     }
   }
 }

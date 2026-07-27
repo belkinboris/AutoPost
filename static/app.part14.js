@@ -269,7 +269,7 @@ async function deleteAccount(){
 // COOKIE + KEYBOARD
 async function verifyTgUsername(){
   const username=($("f_tg_username")||{value:""}).value.trim();
-  if(!username) return toast("Введи @username","err");
+  if(!username) return toast("Введите @username","err");
   const btn=$("tg_check_btn"),msg=$("tg_check_msg");
   btn.innerHTML='<span class="spinner"></span>';btn.disabled=true;
   try{

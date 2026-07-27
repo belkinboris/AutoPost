@@ -1543,7 +1543,7 @@ async def yookassa_notify(request: Request):
 
 @app.delete("/api/me")
 def delete_account(user: User = Depends(current_user)):
-    from database import ChannelRule
+    from database import ChannelRule, Subscription
     import uuid as _uuid
     uid = user.id
     correlation_id = _uuid.uuid4().hex[:12]
@@ -1704,6 +1704,26 @@ def delete_account(user: User = Depends(current_user)):
             logger.info(f"{log_prefix} шаг 6.6: TelegramIdentity очищены ДО удаления User: {removed}")
     except Exception as e:
         logger.warning(f"{log_prefix} шаг 6.6 (TelegramIdentity) не удался: exception_type={type(e).__name__} repr={repr(e)} orig={repr(getattr(e, 'orig', None))}")
+
+    # КРИТИЧНО (тот же класс бага четвёртый раз, найден тестом до прода):
+    # Subscription.user_id -- настоящий FK на user.id. Пока
+    # SUBSCRIPTION_ENABLED=false, строк в таблице нет и удаление проходит; в
+    # день включения автосписаний любой подписчик, решивший удалить аккаунт,
+    # получил бы ForeignKeyViolation на шаге 7 -- и, что хуже, fallback ниже
+    # молча анонимизировал бы запись, вернув {"ok": true}. Подписка при этом
+    # осталась бы жива вместе с payment_method_id, то есть автосписания
+    # продолжили бы уходить с карты человека, который аккаунт удалил.
+    # Удаляем строку целиком: платить больше не за что, а сохранённая карта
+    # не должна пережить аккаунт.
+    try:
+        with session() as s:
+            removed = 0
+            for sub in s.exec(select(Subscription).where(Subscription.user_id == uid)).all():
+                s.delete(sub); removed += 1
+            s.commit()
+            logger.info(f"{log_prefix} шаг 6.7: удалены Subscription={removed} (вместе с сохранённой картой)")
+    except Exception as e:
+        _fail("удаление Subscription", e)
 
     try:
         with session() as s:

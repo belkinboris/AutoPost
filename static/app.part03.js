@@ -57,7 +57,7 @@ async function renderDashboard(){
       // Пользователь явно нажал "Пропустить" — показываем пустой dashboard
       // с явным призывом создать канал, не зацикливаем обратно на quick start.
       $("app").innerHTML=topbar()+`<div class="wrap">
-        <div class="page-head"><h1>Твои каналы</h1><p>Пока нет ни одного канала.</p></div>
+        <div class="page-head"><h1>Ваши каналы</h1><p>Пока нет ни одного канала.</p></div>
         <div class="grid grid-3">
           <div class="add-card" onclick="go('new_channel')"><div class="plus">+</div>
             <div style="font-size:14px;font-weight:500">Новый канал</div></div>
@@ -67,7 +67,7 @@ async function renderDashboard(){
     return renderQuickStart(); // новый пользователь — сразу к первому посту, без пустого дашборда
   }
   $("app").innerHTML=topbar()+`<div class="wrap">
-    <div class="page-head"><h1>Твои каналы</h1><p>ИИ пишет посты сам — тебе только выбирать лучший.</p></div>
+    <div class="page-head"><h1>Ваши каналы</h1><p>ИИ пишет посты сам — вам остаётся выбрать лучший.</p></div>
     <div class="grid grid-3" id="chans"><div class="text-faint">Загрузка…</div></div></div>`;
   $("chans").innerHTML=chans.map(c=>renderChanCard(c)).join("")+`<div class="add-card" onclick="go('new_channel')"><div class="plus">+</div>
     <div style="font-size:14px;font-weight:500">Новый канал</div></div>`;
@@ -147,9 +147,13 @@ function renderQuickStart(){
   App._chan = null;
 
   // Экран выбора: что делать сначала?
+  // «Пропустить» здесь было дважды: сверху слева и под кнопками выбора. Обе
+  // вели в qsSkip(), то есть одна и та же команда стояла на экране два раза --
+  // на первом же экране после регистрации. Верхнюю убрали: она вдобавок
+  // притворялась навигацией (место back-link, но стрелка вправо), а нижняя
+  // стоит там, где вторичное действие и ожидают.
   $("app").innerHTML=`<div class="wrap" style="max-width:560px">
-    <button class="back-link" style="margin-top:12px" onclick="qsSkip()">Пропустить →</button>
-    <div class="page-head" style="text-align:center;margin-top:8px">
+    <div class="page-head" style="text-align:center;margin-top:32px">
       <h1 style="font-family:'Instrument Serif',serif;font-size:30px;font-weight:400">Что сделать сначала?</h1>
       <p style="color:var(--text-dim)">Выберите — с чего начнём</p>
     </div>
@@ -213,8 +217,10 @@ function renderQuickStartGenerate(prefillTopic){
     <button class="back-link" style="margin-top:12px" onclick="renderQuickStart()">← Назад</button>
     <div class="page-head" style="text-align:center;margin-top:8px">
       <h1 style="font-family:'Instrument Serif',serif;font-size:30px;font-weight:400">О чём сделать первый пост?</h1>
-      <p style="color:var(--text-dim)">Канал можно подключить позже — сначала покажем пример поста.</p>
-      <p style="color:var(--text-faint);font-size:13px;margin-top:6px">Сейчас покажем пример поста. Потом можно будет менять стиль, длину, расписание и подключить канал.</p>
+      <!-- Было двумя абзацами подряд, и оба говорили одно и то же: «сначала
+           покажем пример поста» и «канал подключите позже». Второй абзац
+           добавлял к этому только перечисление настроек -- его и оставили. -->
+      <p style="color:var(--text-dim)">Сначала покажем пример поста. Канал, стиль, длину и расписание настроите потом.</p>
     </div>
     <div class="card">
       <textarea id="qs_about" rows="3" placeholder="Например: M&A сделки в России, Roblox, салон красоты, криптоновости" style="font-size:15px"></textarea>

@@ -341,7 +341,7 @@ function renderAuth(mode="login"){
   const tgInitData=_tgAuthInitData();
   $("app").innerHTML=`<div class="auth-wrap"><div class="auth-box">
     <div class="auth-logo">Авто<span>пост</span></div>
-    <div class="auth-sub">ИИ пишет посты для твоего Telegram-канала — автопилот или с вашим подтверждением</div>
+    <div class="auth-sub">ИИ пишет посты для вашего Telegram-канала — на автопилоте или после подтверждения</div>
     ${tgInitData?`<div class="card" style="text-align:center">
       <div style="font-size:14px;color:var(--text-dim);margin-bottom:14px">Вы открыли АвтоПост в Telegram</div>
       <button class="btn" style="width:100%;justify-content:center;padding:14px" id="tgContinueBtn" onclick="tgContinueAuth()">Продолжить как ${esc(_tgAuthFirstName())}</button>
@@ -541,7 +541,7 @@ async function renderDashboard(){
       // Пользователь явно нажал "Пропустить" — показываем пустой dashboard
       // с явным призывом создать канал, не зацикливаем обратно на quick start.
       $("app").innerHTML=topbar()+`<div class="wrap">
-        <div class="page-head"><h1>Твои каналы</h1><p>Пока нет ни одного канала.</p></div>
+        <div class="page-head"><h1>Ваши каналы</h1><p>Пока нет ни одного канала.</p></div>
         <div class="grid grid-3">
           <div class="add-card" onclick="go('new_channel')"><div class="plus">+</div>
             <div style="font-size:14px;font-weight:500">Новый канал</div></div>
@@ -551,7 +551,7 @@ async function renderDashboard(){
     return renderQuickStart(); // новый пользователь — сразу к первому посту, без пустого дашборда
   }
   $("app").innerHTML=topbar()+`<div class="wrap">
-    <div class="page-head"><h1>Твои каналы</h1><p>ИИ пишет посты сам — тебе только выбирать лучший.</p></div>
+    <div class="page-head"><h1>Ваши каналы</h1><p>ИИ пишет посты сам — вам остаётся выбрать лучший.</p></div>
     <div class="grid grid-3" id="chans"><div class="text-faint">Загрузка…</div></div></div>`;
   $("chans").innerHTML=chans.map(c=>renderChanCard(c)).join("")+`<div class="add-card" onclick="go('new_channel')"><div class="plus">+</div>
     <div style="font-size:14px;font-weight:500">Новый канал</div></div>`;
@@ -631,9 +631,13 @@ function renderQuickStart(){
   App._chan = null;
 
   // Экран выбора: что делать сначала?
+  // «Пропустить» здесь было дважды: сверху слева и под кнопками выбора. Обе
+  // вели в qsSkip(), то есть одна и та же команда стояла на экране два раза --
+  // на первом же экране после регистрации. Верхнюю убрали: она вдобавок
+  // притворялась навигацией (место back-link, но стрелка вправо), а нижняя
+  // стоит там, где вторичное действие и ожидают.
   $("app").innerHTML=`<div class="wrap" style="max-width:560px">
-    <button class="back-link" style="margin-top:12px" onclick="qsSkip()">Пропустить →</button>
-    <div class="page-head" style="text-align:center;margin-top:8px">
+    <div class="page-head" style="text-align:center;margin-top:32px">
       <h1 style="font-family:'Instrument Serif',serif;font-size:30px;font-weight:400">Что сделать сначала?</h1>
       <p style="color:var(--text-dim)">Выберите — с чего начнём</p>
     </div>
@@ -697,8 +701,10 @@ function renderQuickStartGenerate(prefillTopic){
     <button class="back-link" style="margin-top:12px" onclick="renderQuickStart()">← Назад</button>
     <div class="page-head" style="text-align:center;margin-top:8px">
       <h1 style="font-family:'Instrument Serif',serif;font-size:30px;font-weight:400">О чём сделать первый пост?</h1>
-      <p style="color:var(--text-dim)">Канал можно подключить позже — сначала покажем пример поста.</p>
-      <p style="color:var(--text-faint);font-size:13px;margin-top:6px">Сейчас покажем пример поста. Потом можно будет менять стиль, длину, расписание и подключить канал.</p>
+      <!-- Было двумя абзацами подряд, и оба говорили одно и то же: «сначала
+           покажем пример поста» и «канал подключите позже». Второй абзац
+           добавлял к этому только перечисление настроек -- его и оставили. -->
+      <p style="color:var(--text-dim)">Сначала покажем пример поста. Канал, стиль, длину и расписание настроите потом.</p>
     </div>
     <div class="card">
       <textarea id="qs_about" rows="3" placeholder="Например: M&A сделки в России, Roblox, салон красоты, криптоновости" style="font-size:15px"></textarea>
@@ -956,8 +962,8 @@ async function _qsGenerateImpl(about){
     // ошибок генерации. Показываем его как есть, не подменяем дженериком —
     // иначе пользователь не узнает что именно с темой не так.
     const human=isTokenIssue
-      ? "Закончились пробные посты. Пополни баланс в разделе «Тарифы»."
-      : (errMsg || "Не удалось сгенерировать пост. Попробуй ещё раз.");
+      ? "Закончились пробные посты. Пополните баланс в разделе «Тарифы»."
+      : (errMsg || "Не удалось сгенерировать пост. Попробуйте ещё раз.");
     toast(human,"err");
     btn.innerHTML="Сгенерировать пост";btn.disabled=false;
     return;
@@ -1128,8 +1134,8 @@ async function renderConnectChannel(){
     </div>
 
     <div class="hint" style="margin-top:14px;line-height:1.7">
-      1. Открой канал → Управление → Администраторы<br>
-      2. Добавь <b>@${esc(botUsername)}</b><br>
+      1. Откройте канал → Управление → Администраторы<br>
+      2. Добавьте <b>@${esc(botUsername)}</b><br>
       3. Включи право «Публиковать сообщения»<br>
       <a href="/how-to" target="_blank" rel="noopener">Подробная инструкция с картинками →</a>
     </div>
@@ -1420,9 +1426,9 @@ function renderNewChannel(){
   _ncVoice="author";_ncFormat="story";_ncEmoji="minimal";_ncCta=false;_ncCtaText="";_ncHz=12;_ncStyleProfile="";
   $("app").innerHTML=topbar("dashboard","все каналы")+`<div class="wrap" style="max-width:680px">
     <div class="page-head"><h1>Новый канал</h1>
-      <p>Расскажи о канале — ИИ покажет три варианта постов на выбор.</p></div>
+      <p>Расскажите о канале — ИИ покажет три варианта постов на выбор.</p></div>
     <div class="card">
-      <label class="field"><span class="field-label">Название (для тебя)</span>
+      <label class="field"><span class="field-label">Название (видно только вам)</span>
         <input id="nc_title" placeholder="Например: Крипта без воды" maxlength="80"></label>
 
       <div class="field mt"><span class="field-label">Telegram-канал</span>
@@ -1699,9 +1705,9 @@ async function ncGenerate(){
       if(loadEl){const fs=loadEl.querySelector("div");if(fs) fs.remove();}
       const errMsg=(e.message||"").toLowerCase();
       const human=errMsg.includes("токен")||errMsg.includes("limit")||errMsg.includes("закончил")
-        ? "Посты закончились. Пополни баланс в разделе «Тарифы»."
+        ? "Посты закончились. Пополните баланс в разделе «Тарифы»."
         : errMsg.includes("529")||errMsg.includes("overload")
-        ? "Серверы ИИ перегружены. Попробуй через минуту."
+        ? "Серверы ИИ перегружены. Попробуйте через минуту."
         : (e.message||"Не удалось сгенерировать");
       const el=document.createElement("div");
       el.className="onboard-card";
@@ -1716,7 +1722,7 @@ async function ncGenerate(){
   if(!okPosts.length){
     $("ob_posts").insertAdjacentHTML("beforeend",`
       <div style="padding:16px;background:var(--accent-soft);border-radius:var(--radius);text-align:center">
-        <div style="font-size:14px;color:var(--accent-dark);margin-bottom:10px">Не удалось создать посты. Проверь баланс в разделе «Тарифы».</div>
+        <div style="font-size:14px;color:var(--accent-dark);margin-bottom:10px">Не удалось создать посты. Проверьте баланс в разделе «Тарифы».</div>
         <button class="btn" onclick="go('billing')">Перейти к тарифам →</button>
       </div>`);
     btn.disabled=false;btn.textContent="✦ Попробовать снова";
@@ -2437,14 +2443,14 @@ function renderSettings(){
                  <input id="f_chat" value="${esc(c.tg_chat)}" placeholder="@my_channel" style="flex:1">
                  <button class="btn-outline btn-sm" onclick="verifyChannel()" id="verBtn" style="white-space:nowrap">Проверить</button>
                </div>
-               <div class="hint">Добавь бота <b>@${esc(App.cfg?.bot_username||"…")}</b> администратором с правом публикации. <a href="/how-to" target="_blank" rel="noopener">Как это сделать →</a></div>
+               <div class="hint">Добавьте бота <b>@${esc(App.cfg?.bot_username||"…")}</b> администратором с правом публикации. <a href="/how-to" target="_blank" rel="noopener">Как это сделать →</a></div>
                <div id="verMsg" style="font-size:13px;margin-top:6px"></div>
              </div>`
           : `<div class="row" style="gap:8px">
                <input id="f_chat" value="${esc(c.tg_chat)}" placeholder="@my_channel" style="flex:1">
                <button class="btn-outline btn-sm" onclick="verifyChannel()" id="verBtn" style="white-space:nowrap">Проверить</button>
              </div>
-             <div class="hint">Добавь бота <b>@${esc(App.cfg?.bot_username||"…")}</b> администратором с правом публикации. <a href="/how-to" target="_blank" rel="noopener">Как это сделать →</a></div>
+             <div class="hint">Добавьте бота <b>@${esc(App.cfg?.bot_username||"…")}</b> администратором с правом публикации. <a href="/how-to" target="_blank" rel="noopener">Как это сделать →</a></div>
              <div id="verMsg" style="font-size:13px;margin-top:6px"></div>`
         }
       </label>
@@ -2486,7 +2492,7 @@ function renderSettings(){
       <div style="margin-bottom:14px" id="tg_notif_block">
         ${App.user?.tg_chat_id
           ? '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--green-bg);border-radius:10px;font-size:14px;color:var(--green)">✅ Подключено — уведомления активны</div>'
-          : '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;line-height:1.6">Нажми кнопку — бот пришлёт приветствие и начнёт отправлять уведомления.</div>'
+          : '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;line-height:1.6">Нажмите кнопку — бот пришлёт приветствие и начнёт отправлять уведомления.</div>'
             + '<button class="btn" onclick="openTgConnect()" style="display:inline-flex;margin-bottom:4px">💬 Подключить уведомления →</button>'
             + '<div class="hint" style="margin-top:8px">Откроется бот — нажми Start</div>'
         }
@@ -2869,7 +2875,7 @@ async function generateNow(){
       if(isLimit) logProductEvent("limit_reached");
       attempts++;
       if(is529&&attempts<3){toast(`Серверы заняты, повтор через 15с… (${attempts}/3)`);await new Promise(r=>setTimeout(r,15000));}
-      else{toast(is529?"Серверы перегружены. Попробуй позже.":e.message,"err");if(btn) btn.innerHTML="Создать";return;}
+      else{toast(is529?"Серверы перегружены. Попробуйте позже.":e.message,"err");if(btn) btn.innerHTML="Создать";return;}
     }
   }
 }
@@ -3143,7 +3149,7 @@ async function deleteAccount(){
 // COOKIE + KEYBOARD
 async function verifyTgUsername(){
   const username=($("f_tg_username")||{value:""}).value.trim();
-  if(!username) return toast("Введи @username","err");
+  if(!username) return toast("Введите @username","err");
   const btn=$("tg_check_btn"),msg=$("tg_check_msg");
   btn.innerHTML='<span class="spinner"></span>';btn.disabled=true;
   try{
@@ -3344,9 +3350,27 @@ function initCookieBanner(){
   const b=document.createElement("div");
   b.style.cssText="position:fixed;bottom:0;left:0;right:0;background:#171b20;color:#e4e8ec;font-size:13px;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;z-index:9999;";
   b.innerHTML=`<span>Мы используем cookies. <a href="/legal/privacy" target="_blank" style="color:#d8b15e">Подробнее</a></span>
-    <button onclick="this.parentElement.remove();localStorage.setItem('cookie_ok','1')"
-      style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
+    <button style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
   document.body.appendChild(b);
+
+  // Плашка прижата к низу и лежит ПОВЕРХ страницы, а запаса снизу у body не
+  // было. Замерено на 390px: она целиком закрывала ссылки «Оферта»,
+  // «Политика конфиденциальности» и «Возврат» -- перекрытие 19px из 19, и
+  // прокрутить дальше нельзя, страница уже кончилась. То есть до нажатия
+  // «Понятно» юридические документы были недоступны с телефона вовсе, хотя
+  // сама плашка при этом предлагает прочитать «Подробнее».
+  // Отступ считаем по фактической высоте: на узком экране текст переносится,
+  // и плашка становится выше.
+  const pad=()=>{ document.body.style.paddingBottom=b.offsetHeight+"px"; };
+  pad();
+  window.addEventListener("resize",pad);
+
+  b.querySelector("button").onclick=()=>{
+    b.remove();
+    document.body.style.paddingBottom="";
+    window.removeEventListener("resize",pad);
+    localStorage.setItem("cookie_ok","1");
+  };
 }
 function initKeyboardDismiss(){
   document.addEventListener("touchstart",function(e){

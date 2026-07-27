@@ -4,9 +4,9 @@ function renderNewChannel(){
   _ncVoice="author";_ncFormat="story";_ncEmoji="minimal";_ncCta=false;_ncCtaText="";_ncHz=12;_ncStyleProfile="";
   $("app").innerHTML=topbar("dashboard","все каналы")+`<div class="wrap" style="max-width:680px">
     <div class="page-head"><h1>Новый канал</h1>
-      <p>Расскажи о канале — ИИ покажет три варианта постов на выбор.</p></div>
+      <p>Расскажите о канале — ИИ покажет три варианта постов на выбор.</p></div>
     <div class="card">
-      <label class="field"><span class="field-label">Название (для тебя)</span>
+      <label class="field"><span class="field-label">Название (видно только вам)</span>
         <input id="nc_title" placeholder="Например: Крипта без воды" maxlength="80"></label>
 
       <div class="field mt"><span class="field-label">Telegram-канал</span>
