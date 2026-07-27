@@ -114,7 +114,7 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 68 passed, 6 skipped
+python3 -m pytest -q          # ожидается 78 passed, 6 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__
@@ -152,10 +152,12 @@ pw.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/
 ## Известные проблемы (честно)
 
 - **Тесты покрывают не всё, что дорого.** `python3 -m pytest -q` даёт
-  63 прошедших и 6 пропущенных (27.07). Пропущен `test_quickstart_flow.py`:
-  он тратит настоящие токены модели, запуск по `RUN_LLM_TESTS=1`. Не покрыто
-  вообще: удаление аккаунта, дедупликация постов, биллинг — то есть ровно то,
-  что уже ломалось в проде. Зелёный прогон это не ловит.
+  78 прошедших и 6 пропущенных (27.07). Пропущен `test_quickstart_flow.py`:
+  он тратит настоящие токены модели, запуск по `RUN_LLM_TESTS=1`. Удаление
+  аккаунта и автосписание покрыты. **Не покрыта дедупликация постов** — та
+  самая, из-за которой в канал ушли два поста об одном событии: порог
+  `DUPLICATE_THRESHOLD` подобран на одной паре с прода, и регрессию на нём
+  сейчас не заметит ничто.
 - **Деплой ломается**: Timeweb периодически не может склонировать репозиторий
   с GitHub (таймаут к `github.com:443`). Это сеть на стороне хостинга, не
   авторизация. Обходной путь — ручная загрузка изменённых файлов.
