@@ -548,31 +548,53 @@ async def _render_approval_card(chat_id: int, message_id: Optional[int], post_id
 async def _send_approval_card(post_id: int, channel_id: int, chat_id: Optional[int], channel_title: str, post_text: str):
     """
     Заводит дедлайн и запись PostApproval для поста в режиме "публикация
-    после подтверждения" -- ВСЕГДА, вне зависимости от того, подключены ли
-    у пользователя личные уведомления в Telegram (chat_id может быть None).
-    Карточка в Telegram -- опциональный дополнительный канал подтверждения
-    поверх этого таймера, не обязательное условие для его работы:
-    подтвердить/отклонить/отредактировать всегда можно и на сайте, через
-    обычную очередь (см. /api/posts/{id}/publish и cancel_pending_approval).
+    после подтверждения" -- но ТОЛЬКО если мы смогли предупредить человека
+    карточкой в Telegram.
+
+    Почему так. Правило 4 в CLAUDE.md разрешает публикацию по таймеру лишь
+    когда таймер **явно показан**. Раньше запись заводилась всегда, и у
+    пользователя без подключённых уведомлений пост уходил в канал через 30
+    минут, а сам он об этом не узнавал ниоткуда, кроме сайта, куда мог и не
+    заходить. Это ровно то, что FAQ на лендинге отрицает («каждый пост
+    сначала приходит вам в личку»).
+
+    Теперь без доставленной карточки таймер не заводится: пост остаётся в
+    очереди и ждёт решения сколько угодно -- как пост, написанный вручную.
+    Интерфейс это уже показывает правильно, без правок: карточка поста
+    рисует обратный отсчёт при наличии approval_deadline и «сам не
+    опубликуется», когда его нет.
+
+    Обратная сторона решения: у человека без Telegram очередь не будет
+    публиковаться сама. Это осознанно -- лучше молчащая очередь, чем пост,
+    ушедший к подписчикам без ведома владельца. Кто хочет автоматики без
+    подтверждений, включает автопилот.
 
     review_chat_id=0 -- сентинел "нет Telegram-карточки" (0 не может быть
     настоящим chat_id) вместо NULL, чтобы не менять тип существующей
     NOT NULL колонки на уже задеплоенной таблице.
     """
+    if not chat_id:
+        logger.info(
+            f"пост {post_id}: таймер подтверждения не заводим -- у пользователя "
+            f"не подключены уведомления в Telegram, предупредить его нечем"
+        )
+        return
+
     deadline = datetime.utcnow() + timedelta(minutes=config.SOFT_CONTROL_APPROVAL_MINUTES)
-    review_chat_id = 0
-    review_message_id = None
-    if chat_id:
-        result = await _render_approval_card(chat_id, None, post_id, channel_title, post_text, deadline)
-        if result.get("ok"):
-            review_chat_id = chat_id
-            review_message_id = result["result"].get("message_id")
-        else:
-            logger.warning(f"approval card для поста {post_id}: не удалось отправить, {result.get('description')}")
+    result = await _render_approval_card(chat_id, None, post_id, channel_title, post_text, deadline)
+    if not result.get("ok"):
+        # Карточка не доставлена (бот заблокирован, сеть, ошибка Telegram).
+        # Заводить таймер нельзя по той же причине: человек его не увидит.
+        logger.warning(
+            f"approval card для поста {post_id}: не удалось отправить ({result.get('description')}) -- "
+            f"таймер не заводим, пост ждёт решения в очереди"
+        )
+        return
+
     with session() as s:
         s.add(PostApproval(
             post_id=post_id, channel_id=channel_id,
-            review_chat_id=review_chat_id, review_message_id=review_message_id,
+            review_chat_id=chat_id, review_message_id=result["result"].get("message_id"),
             deadline=deadline,
         ))
         s.commit()

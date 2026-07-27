@@ -137,7 +137,7 @@ async function renderAdvanced(){
     <div class="card">
       <div class="card-title">ИИ-консультант</div>
       <div class="hint" style="margin-top:0;margin-bottom:12px">
-        Объясни как хочешь чтобы писались посты — ИИ задаст вопросы и предложит конкретные правила.
+        Объясните, как хотите, чтобы писались посты — ИИ задаст вопросы и предложит конкретные правила.
       </div>
       <div id="consult_msgs" style="max-height:260px;overflow-y:auto;margin-bottom:10px;display:flex;flex-direction:column;gap:8px"></div>
       <div class="row" style="gap:8px">

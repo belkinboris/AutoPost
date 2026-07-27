@@ -595,9 +595,17 @@ function renderChanCard(c){
   // renderTg(), не esc(): next_post_preview содержит настоящую Telegram-разметку
   // (<b>/<i> как в посте) — esc() экранировал её в текст, и в превью буквально
   // было видно "<b>...</b>" вместо жирного выделения.
+  // «Посты скоро появятся» верно только для работающего канала. Планировщик
+  // берёт каналы с enabled == True (см. tick и _refill_if_active в tasks.py),
+  // поэтому на паузе не создаётся ничего — а карточка обещала обратное, причём
+  // строкой ниже той, где написано «На паузе». Про саму паузу тут не
+  // повторяем: это уже сказано в статусе выше, здесь только последствие.
+  const emptyLine=c.enabled===false
+    ? "Новые посты не создаются"
+    : "Очередь пуста — посты скоро появятся";
   const preview=c.next_post_preview
     ? `<div class="chan-preview">${renderTg(c.next_post_preview)}</div>`
-    : `<div class="chan-preview chan-preview-empty">Очередь пуста — посты скоро появятся</div>`;
+    : `<div class="chan-preview chan-preview-empty">${emptyLine}</div>`;
 
   return `<div class="chan-card" onclick="go('channel',${c.id})">
     <div class="chan-card-top">
@@ -759,7 +767,7 @@ function renderNewChannelSettings(){
 
     <div class="card mt">
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал автоматически по расписанию. Если выключено — каждый новый пост сначала можно подтвердить в очереди на сайте, а если подключены уведомления — ещё и в Telegram с кнопками «Опубликовать», «Отклонить», «Редактировать». Не отреагируете — опубликуется сам через ${App.cfg?.soft_control_minutes||30} мин.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="ncs_auto"><span class="slider"></span></label>
       </div>
     </div>
@@ -1136,7 +1144,7 @@ async function renderConnectChannel(){
     <div class="hint" style="margin-top:14px;line-height:1.7">
       1. Откройте канал → Управление → Администраторы<br>
       2. Добавьте <b>@${esc(botUsername)}</b><br>
-      3. Включи право «Публиковать сообщения»<br>
+      3. Включите право «Публиковать сообщения»<br>
       <a href="/how-to" target="_blank" rel="noopener">Подробная инструкция с картинками →</a>
     </div>
 
@@ -1446,7 +1454,7 @@ function renderNewChannel(){
           <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--surface2);border-radius:12px">
             <span style="font-size:18px">🕓</span>
             <div style="flex:1;font-size:13px;color:var(--text-dim);line-height:1.5">
-              Канал подключишь позже в настройках. Сейчас ИИ покажет варианты постов.
+              Канал подключите позже в настройках. Сейчас ИИ покажет варианты постов.
             </div>
             <button class="btn-ghost btn-sm" onclick="ncShowVerify()" style="font-size:12px;color:var(--accent);white-space:nowrap">Подключить</button>
           </div>
@@ -1454,7 +1462,7 @@ function renderNewChannel(){
       </div>
 
       <label class="field mt"><span class="field-label">О чём канал</span>
-        <textarea id="nc_about" rows="3" placeholder="Опиши идею — о чём, для кого, что интересно аудитории"></textarea></label>
+        <textarea id="nc_about" rows="3" placeholder="Опишите идею — о чём, для кого, что интересно аудитории"></textarea></label>
       <div class="hint"><b>Примеры:</b><br>
         · <i>Крипта: новости, разбор монет, инвестиционные идеи</i><br>
         · <i>M&A в России: кто купил кого и зачем, простым языком</i><br>
@@ -1790,7 +1798,14 @@ async function renderChannel(){
   } else {
     statusLabel="Вы подтверждаете каждый пост"; dotClass="status-dot-accent";
   }
-  const subLine=c.enabled===false?"На паузе":(connected?`⏱ Следующая генерация ${_nextGenerationLabel(c)}`:"");
+  // Строку «⏱ Следующая генерация …» здесь не показываем. Блок очереди прямо
+  // под вкладками говорит то же самое, но точнее, и делает это в любом
+  // состоянии канала: «Ещё 3 мы готовим — обычно пару минут», «Очередь
+  // заполнена», «Канал на паузе», «Мы сами пишем и публикуем — раз в 12 часов».
+  // Получалось, что срок генерации написан на одном экране дважды. На
+  // дашборде (app.part03.js) строка остаётся: там блока очереди нет и это
+  // единственный способ увидеть, когда появится следующий пост.
+  const subLine = c.enabled === false ? "На паузе" : "";
 
   $("app").innerHTML=topbar("dashboard","все каналы")+`<div class="wrap">
     ${notConnected}
@@ -2266,17 +2281,30 @@ function _renderQueueStatus(c, pendingCount, opts){
     ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
     : `Очередь заполнена. Как только опубликуете один пост, мы подготовим следующий.`;
 
+  // КРИТИЧНО: здесь было «Ни один пост не попадёт в канал, пока вы не нажмёте
+  // „Опубликовать“» -- и это неправда для основного сценария. Пост, который мы
+  // пишем по расписанию, получает PostApproval с дедлайном (см. needs_approval
+  // в tasks.py -- таймер заводится ВСЕГДА, независимо от Telegram), и по
+  // истечении таймера публикуется сам. Правда была написана только в свёрнутом
+  // «Подробнее», а на виду стояло обещание, которого система не выполняет.
+  // Теперь на виду то же, что показывает карточка поста: либо кнопка, либо
+  // видимый таймер. Гарантия при этом не ослаблена -- молча по-прежнему не
+  // уходит ничего.
   return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
-    <div style="font-size:13px;color:var(--accent-dark);font-weight:600">Вы решаете, что публиковать</div>
+    <div style="font-size:13px;color:var(--accent-dark);font-weight:600">В очереди ${counter}</div>
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
-      В очереди ${counter}. Ни один пост не попадёт в канал, пока вы не нажмёте «Опубликовать». ${refillLine}
+      ${App.user?.tg_chat_id
+        ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Telegram."
+        : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки."} ${refillLine}
     </div>
     <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
       onclick="toggleQueueHelp()" id="queue_help_btn">Подробнее ▾</button>
     <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
       Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>
-      У поста, написанного по расписанию, есть обратный отсчёт: если вы не отреагируете за ${softControlMin} мин, мы опубликуем его сами. Такой пост видно по таймеру на карточке.<br>
-      Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>
+      ${App.user?.tg_chat_id
+        ? `Пост по расписанию мы присылаем вам в Telegram, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
+      Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>`
+        : `Пока уведомления не подключены, обратный отсчёт не запускается: предупредить вас нам нечем, поэтому ни один пост не уходит в канал сам. Каждый ждёт вашей кнопки сколько угодно.<br>`}
       ${App.user?.tg_chat_id
         ? `Мы дублируем такие посты вам в Telegram — можно решать с телефона, не заходя на сайт.`
         : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Telegram</a>, чтобы решать с телефона, не заходя на сайт.`}
@@ -2479,7 +2507,7 @@ function renderSettings(){
     <div class="card" id="settings_automation_card">
       <div class="card-title">Автоматизация</div>
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал автоматически по расписанию. Если выключено — каждый новый пост сначала можно подтвердить в очереди на сайте, а если подключены уведомления — ещё и в Telegram с кнопками «Опубликовать», «Отклонить», «Редактировать». Не отреагируете — опубликуется сам через ${App.cfg?.soft_control_minutes||30} мин.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="sw_auto" ${c.auto_publish?"checked":""}><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
@@ -2655,7 +2683,7 @@ async function renderAdvanced(){
     <div class="card">
       <div class="card-title">ИИ-консультант</div>
       <div class="hint" style="margin-top:0;margin-bottom:12px">
-        Объясни как хочешь чтобы писались посты — ИИ задаст вопросы и предложит конкретные правила.
+        Объясните, как хотите, чтобы писались посты — ИИ задаст вопросы и предложит конкретные правила.
       </div>
       <div id="consult_msgs" style="max-height:260px;overflow-y:auto;margin-bottom:10px;display:flex;flex-direction:column;gap:8px"></div>
       <div class="row" style="gap:8px">
@@ -2942,9 +2970,9 @@ async function renderBilling(){
         <button class="btn-outline btn-sm" onclick="navigator.clipboard.writeText('${esc(code)}').then(()=>toast('Скопировано','ok'))">Копировать</button>
       </div>
       <div style="font-size:13px;color:var(--text-dim);background:var(--surface2);border-radius:10px;padding:12px 14px;line-height:1.7">
-        1. Открой <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">@maintrpost_bot</a><br>
+        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">@maintrpost_bot</a><br>
         2. «Открыть АвтоПост» → Зарегистрироваться<br>
-        3. Ввести реферальный код: <b>${esc(code)}</b>
+        3. Введите реферальный код: <b>${esc(code)}</b>
       </div>
       <div class="hint" style="margin-top:8px">Приглашений: <b>${me.referrals_count||0}</b></div>`;
   }catch(_){}
