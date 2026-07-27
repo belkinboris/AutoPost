@@ -9,6 +9,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
+import os
+
 import config
 import generator
 import research
@@ -46,6 +48,73 @@ async def _notify_user_by_id(chat_id: int, text: str):
     ok, err = await telegram_api.send_notification(chat_id, text)
     if not ok:
         logger.warning(f"Уведомление chat_id={chat_id}: {err}")
+
+
+# ── Защита от постов-близнецов ────────────────────────────────────────
+# Сравнение по заголовкам не работает: модель охотно пишет про тот же факт
+# под новым заголовком, и формально запрет «не повторять темы» не нарушен.
+# Особенно это выражено у новостных каналов с поиском -- выдача между двумя
+# генерациями подряд одинаковая, а инструкция «используй только эти факты»
+# сильнее, чем «возьми новое событие». Поэтому сравниваем СОДЕРЖАНИЕ.
+
+_DUP_STOPWORDS = {
+    "который", "которая", "которые", "этого", "этому", "этим", "такое",
+    "когда", "потому", "чтобы", "просто", "очень", "может", "можно", "нужно",
+    "после", "перед", "около", "через", "между", "здесь", "тогда", "сейчас",
+    "именно", "всего", "более", "менее", "самый", "самая", "самое", "своих",
+    "своей", "своего", "будет", "было", "были", "есть", "стал", "стала",
+}
+
+
+# Длина основы слова. Русский сильно флективен: «патриархом» и «патриарха»,
+# «крестил» и «крестила» -- это одно и то же слово в разных формах, и
+# сравнение точных словоформ их не сопоставляет. На реальной паре постов-
+# близнецов совпадение по словоформам вышло 0.10, то есть детектор их не
+# видел вовсе. Грубое усечение до основы решает это без словарей и
+# зависимостей.
+_STEM_LEN = 6
+
+
+def _content_words(text: str) -> set:
+    """Основы значимых слов: без разметки, коротких слов и частотного мусора."""
+    clean = re.sub(r"<[^>]+>", " ", text or "").lower().replace("ё", "е")
+    words = re.findall(r"[а-яa-z0-9]{4,}", clean)
+    return {w[:_STEM_LEN] for w in words if w not in _DUP_STOPWORDS}
+
+
+def _similarity(a: str, b: str) -> float:
+    """
+    Доля общих значимых слов (Жаккар). Два поста про одно событие делят
+    редкие слова -- имена, даты, названия -- и дают заметно высокий
+    коэффициент, тогда как разные темы почти не пересекаются.
+    """
+    wa, wb = _content_words(a), _content_words(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+# Порог откалиброван на реальной паре постов-близнецов с продового канала
+# (два поста про тайное крещение Путина, созданные в одну минуту) и на парах
+# «разные события внутри одной темы канала»:
+#   близнецы                      0.171
+#   разные события, общая тема     0.000 - 0.030
+# Разрыв пятикратный, поэтому 0.10 надёжно ловит первое и не задевает второе.
+#
+# Смещение намеренно в сторону лишних срабатываний: ложная перегенерация
+# стоит около рубля, а пропущенный близнец пользователь видит в своём канале
+# -- именно на это и была жалоба.
+DUPLICATE_THRESHOLD = float(os.getenv("DUPLICATE_THRESHOLD", "0.10"))
+
+
+def _find_duplicate(text: str, existing: list) -> tuple:
+    """Возвращает (совпавший_текст, коэффициент) или (None, 0.0)."""
+    best, score = None, 0.0
+    for other in existing:
+        sim = _similarity(text, other)
+        if sim > score:
+            best, score = other, sim
+    return (best, score) if score >= DUPLICATE_THRESHOLD else (None, score)
 
 
 async def generate_for_channel(channel_id: int, topic: str = "", force_pending: bool = False) -> dict:
@@ -153,6 +222,7 @@ async def generate_for_channel(channel_id: int, topic: str = "", force_pending: 
     # заново каждый цикл, потому что ни один из уже стоящих в очереди постов
     # об этом не учитывался. Теперь смотрим на все НЕ отклонённые посты.
     recent_titles = ""
+    recent_texts = []
     try:
         with session() as s:
             from sqlmodel import select as sel
@@ -164,12 +234,18 @@ async def generate_for_channel(channel_id: int, topic: str = "", force_pending: 
             ).all()
             titles = []
             for p in recent_posts:
-                first_line = p.text.strip().split("\n")[0]
-                # Убираем HTML теги для читаемости
-                import re as _re
-                first_line = _re.sub(r"<[^>]+>", "", first_line).strip()
+                recent_texts.append(p.text or "")
+                lines = [l.strip() for l in (p.text or "").strip().split("\n") if l.strip()]
+                first_line = re.sub(r"<[^>]+>", "", lines[0]).strip() if lines else ""
+                # КРИТИЧНО: одного заголовка мало. Модель спокойно пишет про тот
+                # же факт под новым заголовком, и запрет формально не нарушен.
+                # Даём ещё и первые предложения -- по ним видно САМО СОБЫТИЕ.
+                body = re.sub(r"<[^>]+>", "", " ".join(lines[1:3])).strip()
                 if first_line:
-                    titles.append(f"- {first_line[:120]}")
+                    entry = f"- {first_line[:120]}"
+                    if body:
+                        entry += f"\n  (о чём: {body[:180]})"
+                    titles.append(entry)
             if titles:
                 recent_titles = "\n".join(titles)
     except Exception as e:
@@ -231,6 +307,51 @@ async def generate_for_channel(channel_id: int, topic: str = "", force_pending: 
 
     if _looks_like_menu(text):
         return {"ok": False, "message": "ИИ не смог определить тему. Задайте тему поста вручную."}
+
+    # Пост-проверка на близнеца. Инструкции в промпте оказалось недостаточно:
+    # у новостного канала выдача поиска между генерациями одна и та же, и
+    # указание «используй только эти факты» перевешивает «возьми новое
+    # событие» -- получается тот же факт под новым заголовком. Сравниваем
+    # готовый текст с тем, что уже лежит в очереди и опубликовано, и при
+    # совпадении переписываем один раз, прямо назвав, что повторять нельзя.
+    dup, score = _find_duplicate(text, recent_texts)
+    if dup:
+        dup_head = re.sub(r"<[^>]+>", "", dup.strip().split("\n")[0])[:100]
+        logger.warning(
+            f"Канал {channel_id}: пост дублирует уже существующий "
+            f"(совпадение {score:.2f}) «{dup_head}» -- перегенерирую"
+        )
+        try:
+            retry_hint = (
+                f"{topic}\n\n" if topic else ""
+            ) + (
+                "ЗАПРЕЩЕНО писать про это событие -- пост о нём уже есть:\n"
+                f"{re.sub(r'<[^>]+>', '', dup)[:600]}\n\n"
+                "Возьми СОВЕРШЕННО ДРУГОЕ событие или факт. Не пересказывай то же самое "
+                "другими словами и не меняй только заголовок."
+            )
+            text2, tokens2 = await generator.generate_post(
+                channel, material, retry_hint, rules_text, recent_titles
+            )
+            tokens += tokens2
+            dup2, score2 = _find_duplicate(text2, recent_texts)
+            if dup2:
+                # Вторая попытка тоже про то же самое -- значит по этой теме
+                # свежих событий действительно нет. Лучше не выдавать
+                # пользователю близнеца вовсе: очередь просто останется
+                # короче, и следующий тик попробует снова.
+                logger.warning(
+                    f"Канал {channel_id}: повтор и после перегенерации "
+                    f"(совпадение {score2:.2f}) -- пост не создаю"
+                )
+                return {
+                    "ok": False,
+                    "message": "Свежих событий по теме пока нет — попробуем позже.",
+                    "duplicate_skipped": True,
+                }
+            text = text2
+        except generator.GenerationError as e:
+            logger.warning(f"Канал {channel_id}: перегенерация не удалась ({e}), оставляю исходный пост")
 
     with session() as s:
         channel = s.get(Channel, channel_id)
@@ -922,11 +1043,15 @@ PAID_QUEUE = 7       # "очередь на неделю" -- ровно то, ч
                      # оставалась на 3 -- у оплатившего не появлялось ничего,
                      # за что он заплатил, кроме баланса.
 
-# За один тик догенерируем не больше этого числа постов на канал. Заполнение
-# 3 -> 7 это до 4 генераций подряд, каждая с классификацией темы, поиском и
-# самой генерацией -- пачкой в одном тике они забили бы весь цикл планировщика
-# (tick общий на всех пользователей). Очередь дособерётся за несколько минут.
-MAX_GEN_PER_TICK = 2
+# За один тик догенерируем не больше этого числа постов на канал.
+#
+# Ровно 1, а не 2: две генерации подряд идут на ОДНОЙ И ТОЙ ЖЕ выдаче поиска
+# (между ними проходят секунды), и модель закономерно писала оба поста про
+# одно событие, меняя только заголовок -- это ловилось на реальном канале.
+# Один пост за тик даёт выдаче обновиться и заодно не забивает общий цикл
+# планировщика: каждая генерация это классификация темы, поиск и сам запрос.
+# Очередь всё равно дособирается за несколько минут.
+MAX_GEN_PER_TICK = 1
 
 
 def queue_target_for_user(s, user_id: int) -> int:
@@ -1143,6 +1268,71 @@ async def charge_due_subscriptions():
                     # Повторим позже, тот же period_no -> тот же Idempotence-Key.
                     sub.next_charge_at = datetime.utcnow() + timedelta(hours=config.SUBSCRIPTION_RETRY_HOURS)
                 s.add(sub); s.commit()
+
+
+async def daily_quality_check():
+    """
+    Ежедневный автоматический контроль качества: прогоняет quality-scan и, если
+    нашлись критичные проблемы, присылает владельцу сводку в Telegram.
+
+    Смысл именно в уведомлении, а не в эндпоинте. Дефекты вроде постов-
+    близнецов не видны ни в коде, ни в метриках -- их замечает только тот, кто
+    смотрит на реальные посты. Рассчитывать, что кто-то будет делать это
+    регулярно вручную, нельзя. Поэтому сервис сам проверяет свой результат и
+    сам сообщает, когда с ним что-то не так.
+
+    Получатели -- пользователи с is_admin и подключённым Telegram. Если таких
+    нет, находки всё равно остаются в логах.
+    """
+    try:
+        from internal_quality_scan import quality_scan
+    except Exception as e:
+        logger.warning(f"quality-scan недоступен: {e}")
+        return
+
+    try:
+        # Вызываем напрямую, минуя HTTP: свой же процесс, авторизация не нужна.
+        import internal_quality_scan as _qs
+        token = _qs.INTERNAL_API_TOKEN
+        if not token:
+            logger.info("daily_quality_check: TRUEPOST_INTERNAL_API_TOKEN не задан, проверка пропущена")
+            return
+        report = quality_scan(period_days=1, authorization=f"Bearer {token}")
+    except Exception as e:
+        logger.warning(f"daily_quality_check: скан не отработал: {e}")
+        return
+
+    high = [f for f in report.get("findings", []) if f.get("severity") == "high"]
+    logger.info(
+        f"[quality-scan] постов={report['scanned']['posts']} "
+        f"находок={len(report.get('findings', []))} критичных={len(high)}"
+    )
+    for f in report.get("findings", []):
+        logger.info(f"[quality-scan] {f['severity']}: {f['title']} -- {f['count']}")
+
+    if not high:
+        return
+
+    lines = ["⚠️ <b>АвтоПост: проверка качества</b>", ""]
+    for f in high:
+        lines.append(f"• <b>{f['title']}</b> — {f['count']}")
+    lines.append("")
+    lines.append("Подробности с примерами: /api/internal/quality-scan")
+    text = "\n".join(lines)
+
+    with session() as s:
+        admins = [
+            u.tg_chat_id for u in s.exec(select(User).where(User.is_admin == True)).all()  # noqa
+            if u.tg_chat_id
+        ]
+    if not admins:
+        logger.info("daily_quality_check: нет админов с подключённым Telegram, только лог")
+        return
+    for chat_id in admins:
+        try:
+            await _notify_user_by_id(chat_id, text)
+        except Exception as e:
+            logger.warning(f"daily_quality_check: не отправилось {chat_id}: {e}")
 
 
 async def tick():

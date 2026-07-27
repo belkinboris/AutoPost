@@ -99,6 +99,13 @@ async def lifespan(app: FastAPI):
             tasks.charge_due_subscriptions, "interval", hours=1,
             id="subscription_charges", replace_existing=True, max_instances=1, coalesce=True,
         )
+        # Ежедневный контроль качества результата. Дефекты вроде постов-
+        # близнецов не видны ни в коде, ни в метриках -- сервис проверяет
+        # собственный вывод сам и пишет владельцу, если что-то не так.
+        _scheduler.add_job(
+            tasks.daily_quality_check, "interval", hours=24,
+            id="daily_quality_check", replace_existing=True, max_instances=1, coalesce=True,
+        )
         _scheduler.start()
         logger.info(f"Планировщик запущен, тик каждые {config.TICK_SECONDS}с, /start-поллинг каждые {config.MAIN_BOT_POLL_SECONDS}с")
     yield
@@ -141,6 +148,12 @@ app.include_router(payment_path_router)
 # тарифов можно было проверять цифрами, а не оценкой "20-40 тысяч токенов".
 from internal_token_economics import router as token_economics_router
 app.include_router(token_economics_router)
+
+# Автоматический поиск дефектов, которые видит пользователь, а код-ревью не
+# ловит: дубли постов, Markdown-мусор, переспросы вместо постов, подключённые
+# каналы без единого поста. Проверяет фактический результат, а не исходники.
+from internal_quality_scan import router as quality_scan_router
+app.include_router(quality_scan_router)
 
 from internal_user_journeys import router as user_journeys_router
 from internal_llm_compare import router as llm_compare_router

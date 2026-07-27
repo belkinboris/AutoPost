@@ -130,8 +130,14 @@ async function verifyChannel(){
     if(r.ok){
       App._chan.tg_chat=chat;App._chan.verified=true;
       trackGoal("telegram_verified",{channel_id:App._chan.id});
-      toast("Канал проверен ✓","ok");
-      renderSettings(); // перерисуем — покажет статус «Проверено»
+      toast("Канал подключён ✓ Готовим первые посты","ok");
+      // Раньше пользователь оставался в настройках и не понимал, что дальше:
+      // очередь не обновлялась, сообщений не было, посты появлялись только
+      // после ручной перезагрузки страницы. Теперь сразу показываем очередь
+      // и явно говорим, что посты готовятся (генерация идёт на сервере в
+      // течение минуты-двух, см. tick).
+      App._justConnectedAt = Date.now();
+      setTab("queue");
     } else {
       const msg=$("verMsg");if(msg){msg.textContent=r.message;msg.style.color="var(--red)";}
       if(btn) btn.innerHTML="Проверить";
