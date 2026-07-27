@@ -595,9 +595,17 @@ function renderChanCard(c){
   // renderTg(), не esc(): next_post_preview содержит настоящую Telegram-разметку
   // (<b>/<i> как в посте) — esc() экранировал её в текст, и в превью буквально
   // было видно "<b>...</b>" вместо жирного выделения.
+  // «Посты скоро появятся» верно только для работающего канала. Планировщик
+  // берёт каналы с enabled == True (см. tick и _refill_if_active в tasks.py),
+  // поэтому на паузе не создаётся ничего — а карточка обещала обратное, причём
+  // строкой ниже той, где написано «На паузе». Про саму паузу тут не
+  // повторяем: это уже сказано в статусе выше, здесь только последствие.
+  const emptyLine=c.enabled===false
+    ? "Новые посты не создаются"
+    : "Очередь пуста — посты скоро появятся";
   const preview=c.next_post_preview
     ? `<div class="chan-preview">${renderTg(c.next_post_preview)}</div>`
-    : `<div class="chan-preview chan-preview-empty">Очередь пуста — посты скоро появятся</div>`;
+    : `<div class="chan-preview chan-preview-empty">${emptyLine}</div>`;
 
   return `<div class="chan-card" onclick="go('channel',${c.id})">
     <div class="chan-card-top">
