@@ -53,10 +53,23 @@ cd static && cat app.part*.js > app.js && node --check app.js
 ### 3. Удаление аккаунта — минное поле
 
 `delete_account()` в `main.py` уже трижды падал в проде на FK-нарушениях
-(`User.referred_by`, `IdempotencyKey`, `PostApproval` + `TelegramIdentity`).
+(`User.referred_by`, `IdempotencyKey`, `PostApproval` + `TelegramIdentity`),
+а четвёртый (`Subscription`) поймали тестом до прода.
 **Добавили новую таблицу с FK на `user.id`, `post.id` или `channel.id` —
-допишите её очистку в `delete_account()`.** SQLite этого не поймает: он не
-проверяет FK по умолчанию, а прод на Postgres. Проверять только на Postgres.
+допишите её очистку в `delete_account()`.**
+
+Ловушка внутри ловушки: при неизвестном FK шаг 7 не отдаёт ошибку, а
+анонимизирует запись и возвращает `{"ok": true}`. Проверять надо не код
+ответа, а что строки в базе исчезли — иначе провал выглядит как успех.
+
+Тесты в `test_account_deletion.py`. Обычный прогон уже проверяет FK
+(`conftest.py` включает `PRAGMA foreign_keys=ON`), но перед выкладкой лучше
+прогнать на настоящем Postgres:
+
+```bash
+PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test" \
+  python3 -m pytest test_account_deletion.py -q
+```
 
 ### 4. Ничего не публикуется в канал молча
 
@@ -101,7 +114,7 @@ cd static && cat app.part*.js > app.js && node --check app.js
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 63 passed, 6 skipped
+python3 -m pytest -q          # ожидается 68 passed, 6 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__

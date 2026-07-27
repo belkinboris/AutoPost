@@ -43,7 +43,13 @@ import pytest
 # этого решения теряется возможность прогнать тесты на своей БД через
 # переменную окружения; кому нужно -- правит эту строку осознанно.
 _TMP_DIR = tempfile.mkdtemp(prefix="autopost-pytest-")
-os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DIR}/test.db"
+# PYTEST_DATABASE_URL -- осознанный способ прогнать тесты на настоящем
+# Postgres (нарушения FK на SQLite видны не все, см. ниже). Отдельное имя, а
+# не DATABASE_URL, именно чтобы боевой URL нельзя было подставить случайно:
+# его сюда надо вписать руками.
+os.environ["DATABASE_URL"] = os.environ.get(
+    "PYTEST_DATABASE_URL", f"sqlite:///{_TMP_DIR}/test.db"
+)
 os.environ["SECRET_KEY"] = "testsecret"
 os.environ["TRUEPOST_INTERNAL_API_TOKEN"] = "test-token"
 # Тесты собирают адреса как f"{BASE_URL}/api/...". Хост произвольный: весь
@@ -60,6 +66,19 @@ import httpx  # noqa: E402
 
 import database  # noqa: E402
 import main  # noqa: E402
+
+# SQLite по умолчанию НЕ проверяет внешние ключи, и это уже стоило нам трёх
+# аварий подряд: удаление аккаунта проходило локально и падало в проде на
+# Postgres (User.referred_by, IdempotencyKey, PostApproval). Включаем проверку
+# на каждом соединении, чтобы обычный прогон вёл себя как прод.
+if database.engine.dialect.name == "sqlite":
+    from sqlalchemy import event as _sa_event
+
+    @_sa_event.listens_for(database.engine, "connect")
+    def _enable_sqlite_fk(dbapi_connection, _record):
+        cur = dbapi_connection.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
 
 # lifespan приложения через ASGITransport не выполняется, а таблицы создаёт
 # именно он. Создаём схему сами -- заодно не запускаем планировщик.
