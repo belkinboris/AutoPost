@@ -41,7 +41,7 @@ function _tgAuthInitData(){
   try{ return window.Telegram?.WebApp?.initData || ""; }catch(_){ return ""; }
 }
 function _tgAuthFirstName(){
-  try{ return window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || "Telegram"; }catch(_){ return "Telegram"; }
+  try{ return window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || "Телеграм"; }catch(_){ return "Телеграм"; }
 }
 function toggleTgEmailFallback(){
   const c=$("email_auth_card");
@@ -73,7 +73,7 @@ async function tgContinueAuth(){
     await boot();
   }catch(e){
     tgHaptic("error");
-    toast(e&&e.message?e.message:"Не удалось войти через Telegram","err");
+    toast(e&&e.message?e.message:"Не удалось войти через Телеграм","err");
     if(btn){btn.innerHTML=originalLabel;btn.disabled=false;}
   }
 }
@@ -88,9 +88,9 @@ function renderAuth(mode="login"){
   const tgInitData=_tgAuthInitData();
   $("app").innerHTML=`<div class="auth-wrap"><div class="auth-box">
     <div class="auth-logo">Авто<span>пост</span></div>
-    <div class="auth-sub">ИИ пишет посты для вашего Telegram-канала — на автопилоте или после подтверждения</div>
+    <div class="auth-sub">ИИ пишет посты для вашего Телеграм-канала — на автопилоте или после подтверждения</div>
     ${tgInitData?`<div class="card" style="text-align:center">
-      <div style="font-size:14px;color:var(--text-dim);margin-bottom:14px">Вы открыли АвтоПост в Telegram</div>
+      <div style="font-size:14px;color:var(--text-dim);margin-bottom:14px">Вы открыли АвтоПост в Телеграм</div>
       <button class="btn" style="width:100%;justify-content:center;padding:14px" id="tgContinueBtn" onclick="tgContinueAuth()">Продолжить как ${esc(_tgAuthFirstName())}</button>
       <div style="margin-top:12px">
         <button class="btn-ghost btn-sm" style="color:var(--text-faint)" onclick="toggleTgEmailFallback()">Уже есть аккаунт с email? →</button>

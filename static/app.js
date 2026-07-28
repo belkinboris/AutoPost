@@ -294,7 +294,7 @@ function _tgAuthInitData(){
   try{ return window.Telegram?.WebApp?.initData || ""; }catch(_){ return ""; }
 }
 function _tgAuthFirstName(){
-  try{ return window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || "Telegram"; }catch(_){ return "Telegram"; }
+  try{ return window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || "Телеграм"; }catch(_){ return "Телеграм"; }
 }
 function toggleTgEmailFallback(){
   const c=$("email_auth_card");
@@ -326,7 +326,7 @@ async function tgContinueAuth(){
     await boot();
   }catch(e){
     tgHaptic("error");
-    toast(e&&e.message?e.message:"Не удалось войти через Telegram","err");
+    toast(e&&e.message?e.message:"Не удалось войти через Телеграм","err");
     if(btn){btn.innerHTML=originalLabel;btn.disabled=false;}
   }
 }
@@ -341,9 +341,9 @@ function renderAuth(mode="login"){
   const tgInitData=_tgAuthInitData();
   $("app").innerHTML=`<div class="auth-wrap"><div class="auth-box">
     <div class="auth-logo">Авто<span>пост</span></div>
-    <div class="auth-sub">ИИ пишет посты для вашего Telegram-канала — на автопилоте или после подтверждения</div>
+    <div class="auth-sub">ИИ пишет посты для вашего Телеграм-канала — на автопилоте или после подтверждения</div>
     ${tgInitData?`<div class="card" style="text-align:center">
-      <div style="font-size:14px;color:var(--text-dim);margin-bottom:14px">Вы открыли АвтоПост в Telegram</div>
+      <div style="font-size:14px;color:var(--text-dim);margin-bottom:14px">Вы открыли АвтоПост в Телеграм</div>
       <button class="btn" style="width:100%;justify-content:center;padding:14px" id="tgContinueBtn" onclick="tgContinueAuth()">Продолжить как ${esc(_tgAuthFirstName())}</button>
       <div style="margin-top:12px">
         <button class="btn-ghost btn-sm" style="color:var(--text-faint)" onclick="toggleTgEmailFallback()">Уже есть аккаунт с email? →</button>
@@ -654,7 +654,7 @@ function renderQuickStart(){
         onclick="qsChooseGenerate()">Сгенерировать первый пост</button>
       <button onclick="qsChooseAnalyze()"
         style="width:100%;padding:16px;font-size:16px;border-radius:10px;border:1.5px solid var(--border);background:var(--surface);cursor:pointer;font-family:inherit;color:var(--text)">
-        Проанализировать мой Telegram-канал
+        Проанализировать мой Телеграм-канал
       </button>
     </div>
     <div style="text-align:center;margin-top:20px">
@@ -767,7 +767,7 @@ function renderNewChannelSettings(){
 
     <div class="card mt">
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="ncs_auto"><span class="slider"></span></label>
       </div>
     </div>
@@ -1005,7 +1005,7 @@ function renderFirstPostResult(channelId, post, about){
 
     <div id="fp_actions" style="display:none">
       <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
-        onclick="go('connect_channel',${channelId})">Подключить Telegram-канал</button>
+        onclick="go('connect_channel',${channelId})">Подключить Телеграм-канал</button>
     </div>
 
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;justify-content:center">
@@ -1131,7 +1131,7 @@ async function renderConnectChannel(){
   $("app").innerHTML=`<div class="wrap" style="max-width:560px">
     <button class="back-link" style="margin-top:12px" onclick="go('channel',${c.id})">← Назад</button>
     <div class="page-head" style="text-align:center;margin-top:8px">
-      <h1 style="font-family:'Instrument Serif',serif;font-size:26px;font-weight:400">Подключите Telegram-канал</h1>
+      <h1 style="font-family:'Instrument Serif',serif;font-size:26px;font-weight:400">Подключите Телеграм-канал</h1>
       <p style="color:var(--text-dim)">Чтобы АвтоПост мог публиковать посты, добавьте бота-публикатора администратором канала.</p>
     </div>
 
@@ -1356,7 +1356,7 @@ async function _doCcConfirmPublish(channelId, postId, tgChat){
   if(timedOut){
     // КРИТИЧНО (P0 fix): не показываем ошибку сразу. HTTP-запрос мог
     // зависнуть на фронте (медленная сеть, мобильное соединение), при этом
-    // backend мог успешно опубликовать пост в Telegram ДО таймаута. Сначала
+    // backend мог успешно опубликовать пост в Телеграм ДО таймаута. Сначала
     // проверяем реальный статус, и только если он не подтвердился —
     // показываем ошибку. Кнопка остаётся disabled всё это время, чтобы
     // исключить повторный клик и дублирующую публикацию.
@@ -1425,7 +1425,7 @@ async function renderPublishSuccess(channelId, tgChat, postId){
     <button class="btn-outline btn-sm" style="width:100%;justify-content:center;margin-top:10px"
       onclick="go('new_channel')">Создать следующий пост</button>
     <div style="text-align:center;margin-top:14px">
-      <a onclick="window.open('${tgUrl}','_blank')" style="font-size:13px;color:var(--text-faint);cursor:pointer;text-decoration:underline">Открыть пост в Telegram</a>
+      <a onclick="window.open('${tgUrl}','_blank')" style="font-size:13px;color:var(--text-faint);cursor:pointer;text-decoration:underline">Открыть пост в Телеграм</a>
     </div>
   </div>`;
 }
@@ -1439,7 +1439,7 @@ function renderNewChannel(){
       <label class="field"><span class="field-label">Название (видно только вам)</span>
         <input id="nc_title" placeholder="Например: Крипта без воды" maxlength="80"></label>
 
-      <div class="field mt"><span class="field-label">Telegram-канал</span>
+      <div class="field mt"><span class="field-label">Телеграм-канал</span>
         <div id="nc_verify_block">
           <div class="row" style="gap:8px">
             <input id="nc_chat" placeholder="@my_channel или https://t.me/channel" style="flex:1">
@@ -1776,7 +1776,7 @@ async function renderChannel(){
   if(App._chan && App._chan.id!==c.id){_queueViewMode="list";_calMonth=null;_calSelectedDate=null;}
   App._chan=c;
   const notConnected=!c.tg_chat?`<div style="background:var(--accent-soft);border:1px solid #e8d5bb;border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent-dark)">
-    📡 Канал не подключён к Telegram.
+    📡 Канал не подключён к Телеграм.
     <button class="btn-ghost btn-sm" onclick="App.tab='settings';renderChannel()" style="color:var(--accent);font-weight:600">Подключить →</button></div>`:"";
 
   // Тот же визуальный язык что и карточки на дашборде (renderChanCard,
@@ -1943,7 +1943,7 @@ function renderPostCard(p, pubMs, channelEnabled){
 
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────
   const channelConnected = App._chan && App._chan.tg_chat && App._chan.verified;
-  const publishDisabledAttr = channelConnected ? "" : `disabled title="Сначала подключите Telegram-канал"`;
+  const publishDisabledAttr = channelConnected ? "" : `disabled title="Сначала подключите Телеграм-канал"`;
   let primaryBtn="", secondaryBtn="", menuItems="";
   if(isFailed){
     primaryBtn=`<button class="btn btn-sm" onclick="toggleEdit(${p.id})" id="edit_${p.id}">Исправить</button>`;
@@ -1965,7 +1965,7 @@ function renderPostCard(p, pubMs, channelEnabled){
   } else if(p.status==="published"){
     const chatLabel=(App._chan?.tg_chat||"").replace(/^https?:\/\/t\.me\//i,"").replace(/^@/,"");
     const tgUrl=p.tg_message_id&&chatLabel?`https://t.me/${chatLabel}/${p.tg_message_id}`:`https://t.me/${chatLabel}`;
-    primaryBtn=`<button class="btn-outline btn-sm" onclick="window.open('${tgUrl}','_blank')">Открыть в Telegram</button>`;
+    primaryBtn=`<button class="btn-outline btn-sm" onclick="window.open('${tgUrl}','_blank')">Открыть в Телеграм</button>`;
     secondaryBtn=`<button class="btn-ghost btn-sm" onclick="regenPost(${p.id})">Создать похожий</button>`;
     menuItems=`<button class="menu-item menu-item-danger" onclick="closePostMenu(${p.id});deletePost(${p.id})">Удалить из списка</button>`;
   } else {
@@ -2294,7 +2294,7 @@ function _renderQueueStatus(c, pendingCount, opts){
     <div style="font-size:13px;color:var(--accent-dark);font-weight:600">В очереди ${counter}</div>
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
       ${App.user?.tg_chat_id
-        ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Telegram."
+        ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Телеграм."
         : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки."} ${refillLine}
     </div>
     <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
@@ -2302,12 +2302,12 @@ function _renderQueueStatus(c, pendingCount, opts){
     <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
       Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>
       ${App.user?.tg_chat_id
-        ? `Пост по расписанию мы присылаем вам в Telegram, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
+        ? `Пост по расписанию мы присылаем вам в Телеграм, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
       Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>`
         : `Пока уведомления не подключены, обратный отсчёт не запускается: предупредить вас нам нечем, поэтому ни один пост не уходит в канал сам. Каждый ждёт вашей кнопки сколько угодно.<br>`}
       ${App.user?.tg_chat_id
-        ? `Мы дублируем такие посты вам в Telegram — можно решать с телефона, не заходя на сайт.`
-        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Telegram</a>, чтобы решать с телефона, не заходя на сайт.`}
+        ? `Мы дублируем такие посты вам в Телеграм — можно решать с телефона, не заходя на сайт.`
+        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Телеграм</a>, чтобы решать с телефона, не заходя на сайт.`}
       <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)" ${settingsLink}>Открыть настройки</button>
     </div>
   </div>`;
@@ -2457,7 +2457,7 @@ function renderSettings(){
   const lens=["50-100 слов","100-200 слов","200-350 слов"];
   $("tabbody").innerHTML=`
     <div class="card">
-      <div class="card-title">Telegram</div>
+      <div class="card-title">Телеграм</div>
       <label class="field"><span class="field-label">Название</span>
         <input id="f_title" value="${esc(c.title)}"></label>
       <label class="field mt"><span class="field-label">@username, ссылка t.me/ или ID</span>
@@ -2507,7 +2507,7 @@ function renderSettings(){
     <div class="card" id="settings_automation_card">
       <div class="card-title">Автоматизация</div>
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="sw_auto" ${c.auto_publish?"checked":""}><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
@@ -2516,7 +2516,7 @@ function renderSettings(){
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Уведомления в Telegram</div>
+      <div class="card-title">Уведомления в Телеграм</div>
       <div style="margin-bottom:14px" id="tg_notif_block">
         ${App.user?.tg_chat_id
           ? '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--green-bg);border-radius:10px;font-size:14px;color:var(--green)">✅ Подключено — уведомления активны</div>'
@@ -3225,7 +3225,7 @@ async function savePost(id){
   catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
 }
 // КРИТИЧНО (UX fix): "Опубликовать сейчас" раньше публиковало мгновенно и
-// безвозвратно в реальный Telegram-канал -- ни одной секунды на передумать,
+// безвозвратно в реальный Телеграм-канал -- ни одной секунды на передумать,
 // даже для только что созданного поста, который никто ещё не смотрел
 // (например сразу после подключения канала). Тот же принцип "минута на
 // отмену", что уже есть в режиме "публикация после подтверждения" (см.
@@ -3252,12 +3252,12 @@ async function publishPost(id){
     return;
   }
 
-  // P0 fix (third issue): если канал не подключён к Telegram, не пытаемся
+  // P0 fix (third issue): если канал не подключён к Телеграм, не пытаемся
   // публиковать вообще — показываем понятное сообщение вместо того чтобы
   // дать запросу дойти до Telegram API и упасть с технической ошибкой.
   const chan = App._chan;
   if (chan && (!chan.tg_chat || !chan.verified)) {
-    toast("Сначала подключите Telegram-канал, потом можно будет опубликовать пост.", "err");
+    toast("Сначала подключите Телеграм-канал, потом можно будет опубликовать пост.", "err");
     return;
   }
 

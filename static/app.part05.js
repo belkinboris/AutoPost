@@ -151,7 +151,7 @@ function renderFirstPostResult(channelId, post, about){
 
     <div id="fp_actions" style="display:none">
       <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
-        onclick="go('connect_channel',${channelId})">Подключить Telegram-канал</button>
+        onclick="go('connect_channel',${channelId})">Подключить Телеграм-канал</button>
     </div>
 
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;justify-content:center">

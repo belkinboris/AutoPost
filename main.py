@@ -512,16 +512,16 @@ def auth_telegram_miniapp(data: TelegramMiniAppAuthIn):
     открытие Mini App заново всегда даёт свежую initData от Telegram.
     """
     if not config.MAIN_BOT_TOKEN:
-        raise HTTPException(503, "Вход через Telegram сейчас недоступен")
+        raise HTTPException(503, "Вход через Телеграм сейчас недоступен")
 
     parsed = security.verify_telegram_init_data(data.init_data, config.MAIN_BOT_TOKEN)
     if not parsed:
-        raise HTTPException(401, "Не удалось подтвердить данные Telegram")
+        raise HTTPException(401, "Не удалось подтвердить данные Телеграм")
 
     tg_user = parsed.get("user") or {}
     tg_user_id = tg_user.get("id")
     if not isinstance(tg_user_id, int):
-        raise HTTPException(401, "Не удалось определить пользователя Telegram")
+        raise HTTPException(401, "Не удалось определить пользователя Телеграм")
     tg_username = (tg_user.get("username") or "")[:64]
 
     with session() as s:

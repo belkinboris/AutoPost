@@ -229,7 +229,7 @@ function _renderQueueStatus(c, pendingCount, opts){
     <div style="font-size:13px;color:var(--accent-dark);font-weight:600">В очереди ${counter}</div>
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
       ${App.user?.tg_chat_id
-        ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Telegram."
+        ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Телеграм."
         : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки."} ${refillLine}
     </div>
     <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
@@ -237,12 +237,12 @@ function _renderQueueStatus(c, pendingCount, opts){
     <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
       Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>
       ${App.user?.tg_chat_id
-        ? `Пост по расписанию мы присылаем вам в Telegram, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
+        ? `Пост по расписанию мы присылаем вам в Телеграм, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
       Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>`
         : `Пока уведомления не подключены, обратный отсчёт не запускается: предупредить вас нам нечем, поэтому ни один пост не уходит в канал сам. Каждый ждёт вашей кнопки сколько угодно.<br>`}
       ${App.user?.tg_chat_id
-        ? `Мы дублируем такие посты вам в Telegram — можно решать с телефона, не заходя на сайт.`
-        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Telegram</a>, чтобы решать с телефона, не заходя на сайт.`}
+        ? `Мы дублируем такие посты вам в Телеграм — можно решать с телефона, не заходя на сайт.`
+        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Телеграм</a>, чтобы решать с телефона, не заходя на сайт.`}
       <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)" ${settingsLink}>Открыть настройки</button>
     </div>
   </div>`;
@@ -392,7 +392,7 @@ function renderSettings(){
   const lens=["50-100 слов","100-200 слов","200-350 слов"];
   $("tabbody").innerHTML=`
     <div class="card">
-      <div class="card-title">Telegram</div>
+      <div class="card-title">Телеграм</div>
       <label class="field"><span class="field-label">Название</span>
         <input id="f_title" value="${esc(c.title)}"></label>
       <label class="field mt"><span class="field-label">@username, ссылка t.me/ или ID</span>
@@ -442,7 +442,7 @@ function renderSettings(){
     <div class="card" id="settings_automation_card">
       <div class="card-title">Автоматизация</div>
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="sw_auto" ${c.auto_publish?"checked":""}><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
@@ -451,7 +451,7 @@ function renderSettings(){
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Уведомления в Telegram</div>
+      <div class="card-title">Уведомления в Телеграм</div>
       <div style="margin-bottom:14px" id="tg_notif_block">
         ${App.user?.tg_chat_id
           ? '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--green-bg);border-radius:10px;font-size:14px;color:var(--green)">✅ Подключено — уведомления активны</div>'

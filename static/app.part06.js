@@ -81,7 +81,7 @@ async function renderConnectChannel(){
   $("app").innerHTML=`<div class="wrap" style="max-width:560px">
     <button class="back-link" style="margin-top:12px" onclick="go('channel',${c.id})">← Назад</button>
     <div class="page-head" style="text-align:center;margin-top:8px">
-      <h1 style="font-family:'Instrument Serif',serif;font-size:26px;font-weight:400">Подключите Telegram-канал</h1>
+      <h1 style="font-family:'Instrument Serif',serif;font-size:26px;font-weight:400">Подключите Телеграм-канал</h1>
       <p style="color:var(--text-dim)">Чтобы АвтоПост мог публиковать посты, добавьте бота-публикатора администратором канала.</p>
     </div>
 

@@ -170,7 +170,7 @@ function renderQuickStart(){
         onclick="qsChooseGenerate()">Сгенерировать первый пост</button>
       <button onclick="qsChooseAnalyze()"
         style="width:100%;padding:16px;font-size:16px;border-radius:10px;border:1.5px solid var(--border);background:var(--surface);cursor:pointer;font-family:inherit;color:var(--text)">
-        Проанализировать мой Telegram-канал
+        Проанализировать мой Телеграм-канал
       </button>
     </div>
     <div style="text-align:center;margin-top:20px">

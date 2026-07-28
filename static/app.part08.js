@@ -9,7 +9,7 @@ function renderNewChannel(){
       <label class="field"><span class="field-label">Название (видно только вам)</span>
         <input id="nc_title" placeholder="Например: Крипта без воды" maxlength="80"></label>
 
-      <div class="field mt"><span class="field-label">Telegram-канал</span>
+      <div class="field mt"><span class="field-label">Телеграм-канал</span>
         <div id="nc_verify_block">
           <div class="row" style="gap:8px">
             <input id="nc_chat" placeholder="@my_channel или https://t.me/channel" style="flex:1">

@@ -158,7 +158,7 @@ async function renderChannel(){
   if(App._chan && App._chan.id!==c.id){_queueViewMode="list";_calMonth=null;_calSelectedDate=null;}
   App._chan=c;
   const notConnected=!c.tg_chat?`<div style="background:var(--accent-soft);border:1px solid #e8d5bb;border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent-dark)">
-    📡 Канал не подключён к Telegram.
+    📡 Канал не подключён к Телеграм.
     <button class="btn-ghost btn-sm" onclick="App.tab='settings';renderChannel()" style="color:var(--accent);font-weight:600">Подключить →</button></div>`:"";
 
   // Тот же визуальный язык что и карточки на дашборде (renderChanCard,
