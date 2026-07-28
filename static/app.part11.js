@@ -60,7 +60,7 @@ function renderQueueBody(){
   const paused = c.enabled === false;
   const queueStatus = _renderQueueStatus(c, pending.length, {minQueue, connected, paused});
 
-  const viewToggle=`<div style="display:flex;gap:8px;margin-bottom:14px">
+  const viewToggle=`<div style="display:flex;gap:8px;margin-bottom:4px">
     <button class="btn-sm ${_queueViewMode==="list"?"btn":"btn-outline"}" onclick="setQueueViewMode('list')">📋 Список</button>
     <button class="btn-sm ${_queueViewMode==="calendar"?"btn":"btn-outline"}" onclick="setQueueViewMode('calendar')">🗓 Календарь</button>
   </div>`;
@@ -242,7 +242,7 @@ function _renderQueueStatus(c, pendingCount, opts){
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
       ${mechanicsLine}${refillLine}
     </div>
-    <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
+    <button class="btn-ghost btn-sm" style="margin-top:0;padding:4px 0;color:var(--accent-dark)"
       onclick="toggleQueueHelp()" id="queue_help_btn">Подробнее ▾</button>
     <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
       Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>

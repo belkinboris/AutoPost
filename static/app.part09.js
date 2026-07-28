@@ -207,7 +207,7 @@ async function renderChannel(){
       </div>
       ${statusLabel?`<div class="status-line"><span class="status-dot ${dotClass}"></span>${statusLabel}</div>`:""}
       ${subLine?`<div class="status-subline">${subLine}</div>`:""}
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
         <button class="btn btn-sm" onclick="openGenPanel()">✦ Создать пост</button>
         <button class="${c.enabled?'btn-outline btn-sm':'btn btn-sm'}" onclick="toggleChannelEnabled()"
           id="pause_btn">${c.enabled?'⏸ Пауза':'▶ Возобновить'}</button>

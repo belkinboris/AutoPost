@@ -488,3 +488,35 @@ button, a, .chip, .tab, .seg button, .back-link, .brand, .token-pill {
 .brand, .back-link, .tab, .btn, .btn-sm, .btn-outline, .btn-ghost, .btn-danger, .btn-green {
   -webkit-user-select: none; user-select: none;
 }
+
+/* ── Минимальная область нажатия ─────────────────────────────
+   Замерено на 390×844 28.07: из элементов управления в кабинете ниже 44px
+   было 94 — «Опубликовать сейчас» 150×27, «Изменить» 78×27, вкладки 38px,
+   переключатели в «Расширенных» 30px, «Читать полностью» 316×24. B4 и B13
+   чинили по одному случаю («⋯» и подвал), но это не случаи, а класс: любая
+   кнопка с `padding: 6-8px` даёт 27-30px при 13px шрифта.
+   44px — та же планка, по которой чинили «⋯» и подвал.
+   Блок стоит в конце файла намеренно: мобильные медиазапросы выше
+   уменьшают `.btn-sm` до `padding: 6px 10px`, и правило должно их перебить. */
+.btn, .btn-sm, .btn-outline, .btn-ghost, .btn-danger, .btn-green,
+.tab, .seg button, .token-pill, .brand, .back-link, .expand-btn {
+  min-height: 44px;
+}
+/* min-height работает только если элемент умеет центрировать содержимое по
+   вертикали. У `.btn` и `.token-pill` это уже есть, остальным добавляем. */
+.btn-sm, .btn-ghost, .btn-danger, .tab, .seg button {
+  display: inline-flex; align-items: center; justify-content: center;
+}
+/* «Читать полностью ↓» и «← все каналы» -- на всю ширину и по левому краю,
+   поэтому им flex без центрирования по горизонтали. */
+.expand-btn, .back-link { display: flex; align-items: center; }
+.back-link { display: inline-flex; }
+
+/* Отступы вокруг выросших кнопок. Кнопка высотой 44px с текстом 13px несёт
+   внутри ~15px воздуха сверху и снизу -- внешние 12-24px после этого удваивают
+   зазор и съедают первый экран. Замер: без этой правки первый пост уезжал
+   с 540px на 617px из 844, то есть терялось всё, что дали B7 и B14. */
+.back-row .back-link { margin-bottom: -20px; }
+.tabs { margin-bottom: 18px; }
+.post-actions { margin-top: 2px; }
+.expand-btn { margin-top: 0; }
