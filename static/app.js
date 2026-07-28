@@ -637,6 +637,9 @@ function renderQuickStart(){
   App.channelId = null;
   App._qsAbout = "";
   App._chan = null;
+  // Сбрасываем и @username: иначе канал, введённый в прошлой попытке
+  // онбординга, молча приклеился бы к следующему созданному каналу.
+  App._qsChannelHandle = "";
 
   // Экран выбора: что делать сначала?
   // «Пропустить» здесь было дважды: сверху слева и под кнопками выбора. Обе
@@ -683,7 +686,8 @@ function qsChooseAnalyze(){
       <input id="qs_channel_link" placeholder="@mychannel или t.me/mychannel" style="font-size:15px;width:100%">
     </div>
     <p style="color:var(--text-faint);font-size:13px;margin-top:8px;text-align:center">
-      Сгенерируем пример поста в стиле вашего канала.
+      Запомним канал, чтобы не вводить его при подключении. Стиль скопируем позже,
+      в настройках канала — там для этого есть отдельный шаг.
     </p>
     <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
       onclick="qsAnalyzeSubmit()">Продолжить</button>
@@ -700,7 +704,13 @@ function qsAnalyzeSubmit(){
   const raw=($("qs_channel_link").value||"").trim();
   if(!raw) return toast("Укажите @username канала","err");
   const handle=raw.replace(/^https?:\/\/t\.me\//,"@").replace(/^t\.me\//,"@").replace(/^@+/,"@");
-  renderQuickStartGenerate(handle);
+  // Раньше handle уходил в renderQuickStartGenerate как ТЕМА и подставлялся в
+  // поле «о чём сделать пост». Человек, попросивший «пиши в стиле моего
+  // канала», получал пост про строку «@durov», а у канала навсегда
+  // оставалась тема «@durov». Теперь запоминаем его как username канала --
+  // он пригодится при подключении, -- а тему спрашиваем отдельно.
+  App._qsChannelHandle = handle;
+  renderQuickStartGenerate();
 }
 
 function renderQuickStartGenerate(prefillTopic){
@@ -713,6 +723,7 @@ function renderQuickStartGenerate(prefillTopic){
            покажем пример поста» и «канал подключите позже». Второй абзац
            добавлял к этому только перечисление настроек -- его и оставили. -->
       <p style="color:var(--text-dim)">Сначала покажем пример поста. Канал, стиль, длину и расписание настроите потом.</p>
+      ${App._qsChannelHandle?`<p style="color:var(--text-faint);font-size:13px;margin-top:6px">Канал ${esc(App._qsChannelHandle)} запомнили — подключим его после первого поста.</p>`:""}
     </div>
     <div class="card">
       <textarea id="qs_about" rows="3" placeholder="Например: M&A сделки в России, Roblox, салон красоты, криптоновости" style="font-size:15px"></textarea>
@@ -917,6 +928,10 @@ async function _qsGenerateImpl(about){
   try{
     chan=await api("POST","/channels",{
       title, about,
+      // @username, введённый на шаге «Проанализировать мой канал». Раньше он
+      // никуда не сохранялся, и человеку приходилось вводить его заново при
+      // подключении.
+      tg_chat: App._qsChannelHandle || "",
       // Короче, чем дефолт — первый пост должен читаться за 10 секунд (см. задачу).
       post_length:"700-1200 знаков, 2-4 коротких абзаца, простой заголовок",
       // Idempotency key (task item E): повторный клик с тем же ключом
