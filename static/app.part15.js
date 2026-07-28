@@ -151,9 +151,9 @@ function pickChannelType(type){
 function initCookieBanner(){
   if(localStorage.getItem("cookie_ok")) return;
   const b=document.createElement("div");
-  b.style.cssText="position:fixed;bottom:0;left:0;right:0;background:#171b20;color:#e4e8ec;font-size:13px;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;z-index:9999;";
-  b.innerHTML=`<span>Мы используем cookies. <a href="/legal/privacy" target="_blank" style="color:#d8b15e">Подробнее</a></span>
-    <button style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
+  b.style.cssText="position:fixed;bottom:0;left:0;right:0;background:#171b20;color:#e4e8ec;font-size:13px;padding:4px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;z-index:9999;";
+  b.innerHTML=`<span>Мы используем cookies. <a href="/legal/privacy" target="_blank" style="color:#d8b15e;display:inline-block;padding:14px 0">Подробнее</a></span>
+    <button style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;min-height:44px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
   document.body.appendChild(b);
 
   // Плашка прижата к низу и лежит ПОВЕРХ страницы, а запаса снизу у body не
@@ -164,6 +164,10 @@ function initCookieBanner(){
   // сама плашка при этом предлагает прочитать «Подробнее».
   // Отступ считаем по фактической высоте: на узком экране текст переносится,
   // и плашка становится выше.
+  // Внешний отступ плашки уменьшен с 12px до 4px: «Понятно» и «Подробнее»
+  // выросли до 44px по высоте (было 28 и 16), и свой воздух теперь несут
+  // они сами -- иначе плашка стала бы на 16px выше и опять полезла бы на
+  // юридические ссылки, которые сама же предлагает прочитать.
   const pad=()=>{ document.body.style.paddingBottom=b.offsetHeight+"px"; };
   pad();
   window.addEventListener("resize",pad);

@@ -152,7 +152,13 @@ label.field + label.field { margin-top: 16px; }
   height: auto; -webkit-line-clamp: unset; }
 .chan-connect-hint { margin-top: 14px; padding: 12px; border: 1.5px dashed var(--border); border-radius: 10px;
   font-size: 13px; color: var(--text-dim); line-height: 1.5; }
-.chan-connect-hint a { color: var(--accent-dark); font-weight: 600; }
+/* «Как подключить →» разрывалась переносом: «Как подключить» оставалось в
+   конце строки (107x16), а стрелка уезжала на следующую отдельной целью
+   13x16 -- в неё попасть нельзя вовсе. `nowrap` держит их вместе, отступы
+   поднимают высоту до 44px. Горизонтальных отступов не даём: надпись и так
+   120px шириной, а лишние съели бы выравнивание с текстом подсказки. */
+.chan-connect-hint a { color: var(--accent-dark); font-weight: 600;
+  display: inline-block; white-space: nowrap; padding: 14px 0; }
 
 /* Календарь очереди (task item: вид по датам) */
 .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
