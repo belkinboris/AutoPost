@@ -561,7 +561,11 @@ async function renderDashboard(){
 function renderChanCard(c){
   const initial=(c.title||"?").trim().charAt(0).toUpperCase()||"?";
   const connected=!!(c.tg_chat && c.verified);
-  const handle=c.tg_chat?esc(c.tg_chat):"канал не указан";
+  // Та же пара, что и на экране канала: «канал не указан» под названием и
+  // «Канал ещё не подключён.» в рамке под ним. Рамка появляется при том же
+  // условии и вдобавок даёт ссылку «Как подключить →» -- подпись без хэндла
+  // не добавляет ничего, кроме повтора.
+  const handle=c.tg_chat?esc(c.tg_chat):"";
 
   if(!connected){
     const hint=c.tg_chat?"Бот пока не подтверждён администратором.":"Канал ещё не подключён.";
@@ -570,7 +574,7 @@ function renderChanCard(c){
         <div class="tg-ava">${initial}</div>
         <div style="min-width:0">
           <h3>${esc(c.title)}</h3>
-          <div class="chan-handle">${handle}</div>
+          ${handle?`<div class="chan-handle">${handle}</div>`:""}
         </div>
       </div>
       <div class="chan-connect-hint">${hint} <a href="/how-to" target="_blank" rel="noopener" onclick="event.stopPropagation()">Как подключить →</a></div>
@@ -1797,6 +1801,12 @@ async function renderChannel(){
   // Тот же визуальный язык что и карточки на дашборде (renderChanCard,
   // app.part03.js) — раньше здесь были старые chip-пилюли, не обновлённые
   // при редизайне карточек.
+  // Строку с хэндлом рисуем только когда хэндл есть. Раньше вместо него
+  // стояло «канал будет указан после подключения» -- ровно та же мысль, что
+  // в баннере на 60px выше, и появлялись они всегда вместе: баннер рисуется
+  // при том же условии `!c.tg_chat`. Замер по методу поиска дублей постов
+  // (основы слов + Жаккар) дал этой паре 0.5 -- выше, чем у любых двух
+  // осмысленно разных строк на экране.
   const initial=(c.title||"?").trim().charAt(0).toUpperCase()||"?";
   const connected=!!(c.tg_chat && c.verified);
   // КРИТИЧНО (UX fix): раньше "канал не подключён" повторялся трижды на
@@ -1835,7 +1845,7 @@ async function renderChannel(){
         <div class="tg-ava" style="width:52px;height:52px;font-size:22px">${esc(initial)}</div>
         <div style="min-width:0">
           <h2 style="font-family:'Instrument Serif',serif;font-size:26px;font-weight:400">${esc(c.title)}</h2>
-          <div class="chan-handle">${c.tg_chat?esc(c.tg_chat):'<span style="color:var(--text-faint);font-style:italic;font-weight:400">канал будет указан после подключения</span>'}</div>
+          ${c.tg_chat?`<div class="chan-handle">${esc(c.tg_chat)}</div>`:""}
         </div>
       </div>
       ${statusLabel?`<div class="status-line"><span class="status-dot ${dotClass}"></span>${statusLabel}</div>`:""}

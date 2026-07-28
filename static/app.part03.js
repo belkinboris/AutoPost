@@ -77,7 +77,11 @@ async function renderDashboard(){
 function renderChanCard(c){
   const initial=(c.title||"?").trim().charAt(0).toUpperCase()||"?";
   const connected=!!(c.tg_chat && c.verified);
-  const handle=c.tg_chat?esc(c.tg_chat):"канал не указан";
+  // Та же пара, что и на экране канала: «канал не указан» под названием и
+  // «Канал ещё не подключён.» в рамке под ним. Рамка появляется при том же
+  // условии и вдобавок даёт ссылку «Как подключить →» -- подпись без хэндла
+  // не добавляет ничего, кроме повтора.
+  const handle=c.tg_chat?esc(c.tg_chat):"";
 
   if(!connected){
     const hint=c.tg_chat?"Бот пока не подтверждён администратором.":"Канал ещё не подключён.";
@@ -86,7 +90,7 @@ function renderChanCard(c){
         <div class="tg-ava">${initial}</div>
         <div style="min-width:0">
           <h3>${esc(c.title)}</h3>
-          <div class="chan-handle">${handle}</div>
+          ${handle?`<div class="chan-handle">${handle}</div>`:""}
         </div>
       </div>
       <div class="chan-connect-hint">${hint} <a href="/how-to" target="_blank" rel="noopener" onclick="event.stopPropagation()">Как подключить →</a></div>
