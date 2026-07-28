@@ -1098,10 +1098,22 @@ def queue_target_for_user(s, user_id: int) -> int:
 
 
 async def _refill_if_active(channel_id: int):
-    """Догенерирует посты до целевой глубины очереди если канал активен."""
+    """Догенерирует посты до целевой глубины очереди если канал активен.
+
+    Резерв нужен только режиму «подтверждение вручную» -- чтобы у пользователя
+    всегда было что решить. В автопилоте резерв не используется вовсе:
+    плановая генерация публикует свой пост напрямую (см. generate_for_channel,
+    channel.auto_publish and not force_pending), минуя очередь. Без этой
+    проверки резерв всё равно копился до MIN_QUEUE=3 при каждом тике и после
+    каждой автопубликации (см. _ensure_queue) -- реальные токены на посты,
+    которые не публикует ни автопилот (у него свой пост), ни пользователь
+    (режима подтверждения для них нет): они просто зависали в очереди
+    «Ждёт вашего решения» навсегда. Так и нашли -- три таких поста с одной
+    минутой создания в проде у канала с включённым автопилотом.
+    """
     with session() as s:
         channel = s.get(Channel, channel_id)
-        if not channel or not channel.enabled:
+        if not channel or not channel.enabled or channel.auto_publish:
             return
         from sqlmodel import select as sel
         pending_count = len(s.exec(

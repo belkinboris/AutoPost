@@ -119,7 +119,7 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 93 passed, 11 skipped
+python3 -m pytest -q          # ожидается 96 passed, 11 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__
@@ -156,12 +156,13 @@ pw.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/
 
 ## Известные проблемы (честно)
 
-- **Тесты.** `python3 -m pytest -q` даёт 93 прошедших и 11 пропущенных
-  (27.07). Пропущены `test_quickstart_flow.py` и `test_topic_validation.py`:
+- **Тесты.** `python3 -m pytest -q` даёт 96 прошедших и 11 пропущенных
+  (28.07). Пропущены `test_quickstart_flow.py` и `test_topic_validation.py`:
   оба ходят в живую модель и тратят токены, запуск по `RUN_LLM_TESTS=1`.
-  Покрыты удаление аккаунта, автосписание и дедупликация — то есть всё, что
-  уже ломалось в проде. Не покрыт фронтенд: там регрессии по-прежнему
-  ловятся только глазами. Поведение модели на граничных темах проверяется
+  Покрыты удаление аккаунта, автосписание, дедупликация и резерв очереди
+  (`test_queue_reserve.py`) — то есть всё, что уже ломалось в проде. Не
+  покрыт фронтенд: там регрессии по-прежнему ловятся только глазами.
+  Поведение модели на граничных темах проверяется
   только под `RUN_LLM_TESTS=1` — в обычном прогоне оно не проверено, и это
   видно по пропускам.
 - **Деплой ломается**: Timeweb периодически не может склонировать репозиторий
