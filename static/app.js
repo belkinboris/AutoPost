@@ -2651,17 +2651,19 @@ async function renderAdvanced(){
         <input type="range" id="f_jitter" min="0" max="120" value="${c.interval_jitter_minutes||0}"
           oninput="$('jlbl').textContent=this.value"
           style="padding:4px 0;height:auto;box-shadow:none;border:none;background:none">
-        <div class="hint">Добавляет случайное отклонение — посты выходят в разное время, выглядит естественнее.</div>
+        <div class="hint">Сдвигает время написания на случайную величину, чтобы посты появлялись не по секундомеру.</div>
       </label>
       <div style="margin-top:14px">
-        <div class="field-label" style="margin-bottom:8px">Окно публикации (UTC)</div>
+        <div class="field-label" style="margin-bottom:8px">Когда писать посты (UTC)</div>
         <div class="row" style="gap:10px">
           <div style="flex:1"><div style="font-size:11px;color:var(--text-faint);margin-bottom:4px">С</div>
             <input id="f_ws" placeholder="09:00" value="${c.publish_window_start||""}"></div>
           <div style="flex:1"><div style="font-size:11px;color:var(--text-faint);margin-bottom:4px">До</div>
             <input id="f_we" placeholder="22:00" value="${c.publish_window_end||""}"></div>
         </div>
-        <div class="hint">Посты публикуются только в это время. Москва = UTC+3.</div>
+        <div class="hint">${c.auto_publish
+          ? "Пишем и публикуем посты только в это время. Москва = UTC+3."
+          : "Новые посты пишем только в это время. Когда они выйдут в канал — решаете вы. Москва = UTC+3."}</div>
       </div>
     </div>
 
