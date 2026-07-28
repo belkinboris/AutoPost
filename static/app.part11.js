@@ -405,10 +405,16 @@ function renderSettings(){
       <div class="card-title">Телеграм</div>
       <label class="field"><span class="field-label">Название</span>
         <input id="f_title" value="${esc(c.title)}"></label>
+      <!-- Подтверждение показывает только «✓ Проверено», без подписи канала.
+           Замер на 390px: строка «✓ Проверено · @канал» не помещалась в 214px
+           и обрезалась многоточием -- то есть вторая копия хэндла была ещё и
+           нечитаемой, а первая, целая, стоит в шапке на 365px выше, на том же
+           экране. Сам хэндл никуда не делся: «Изменить» открывает поле, где он
+           лежит целиком и правится. -->
       <label class="field mt"><span class="field-label">@username, ссылка t.me/ или ID</span>
         ${c.verified
           ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--green-bg);border-radius:10px;margin-bottom:6px;flex-wrap:nowrap;overflow:hidden">
-               <span style="color:var(--green);font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✓ Проверено · ${esc(c.tg_chat)}</span>
+               <span style="color:var(--green);font-weight:600;font-size:13px">✓ Проверено</span>
                <button class="btn-ghost btn-sm" onclick="showVerifyInput()" style="flex-shrink:0;font-size:12px">Изменить</button>
              </div>
              <div id="verifyInputBlock" class="hidden">
