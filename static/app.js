@@ -1988,7 +1988,12 @@ function renderPostCard(p, pubMs, channelEnabled){
   }
   const menuBtn = menuItems ? `
     <div style="position:relative;margin-left:auto">
-      <button class="btn-ghost btn-sm" onclick="togglePostMenu(${p.id})" style="padding:6px 10px">⋯</button>
+      <!-- Замерено на 390px: цель была 32×27 — самая мелкая на экране, и стоит
+           вплотную к «Опубликовать сейчас», то есть к необратимому действию.
+           Промах пальцем здесь стоит поста, ушедшего в канал. У кнопки нет ни
+           фона, ни рамки, поэтому увеличенные отступы расширяют область
+           нажатия, ничего не меняя внешне. -->
+      <button class="btn-ghost btn-sm" onclick="togglePostMenu(${p.id})" style="padding:14px 16px;line-height:1">⋯</button>
       <div id="pmenu_${p.id}" class="post-menu hidden">${menuItems}</div>
     </div>` : "";
 
