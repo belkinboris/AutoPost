@@ -1821,6 +1821,12 @@ async function renderChannel(){
   // дашборде (app.part03.js) строка остаётся: там блока очереди нет и это
   // единственный способ увидеть, когда появится следующий пост.
   const subLine = c.enabled === false ? "На паузе" : "";
+  // Тему канала здесь не показываем. Замерено на 390px: абзац с темой занимал
+  // 62px из 250px шапки и отодвигал первый пост на 612px из 844 -- при том, что
+  // он только для чтения, повторяет поле «Тема» во вкладке «Настройки» и не
+  // меняется между заходами. На этот экран приходят решать судьбу постов; чтобы
+  // решить, нужен текст поста, а не описание канала. Тема осталась там, где её
+  // можно исправить, -- в «Настройках».
 
   $("app").innerHTML=topbar("dashboard","все каналы")+`<div class="wrap">
     ${notConnected}
@@ -1834,7 +1840,6 @@ async function renderChannel(){
       </div>
       ${statusLabel?`<div class="status-line"><span class="status-dot ${dotClass}"></span>${statusLabel}</div>`:""}
       ${subLine?`<div class="status-subline">${subLine}</div>`:""}
-      ${c.about?`<p style="font-size:13px;color:var(--text-dim);margin-top:10px;max-width:500px">${esc(c.about)}</p>`:""}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
         <button class="btn btn-sm" onclick="openGenPanel()">✦ Создать пост</button>
         <button class="${c.enabled?'btn-outline btn-sm':'btn btn-sm'}" onclick="toggleChannelEnabled()"
