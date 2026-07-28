@@ -39,11 +39,19 @@
        Использует переменные --text-faint/--text из static/styles.css,
        уже подключённого этой страницей -- отдельного styles.css не тянем. */
     .app-footer {
-      max-width: 1180px; margin: 0 auto; padding: 18px 24px 28px;
-      display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;
+      max-width: 1180px; margin: 0 auto; padding: 18px 16px 15px;
+      display: flex; column-gap: 0; row-gap: 4px; flex-wrap: wrap;
+      justify-content: center; align-items: center;
       color: var(--text-faint); font-size: 12px; text-align: center;
     }
-    .app-footer a { color: var(--text-faint); text-decoration: none; }
+    .app-footer span { padding: 0 8px; }
+    /* Ссылки на документы -- единственное, что здесь можно нажать, и до 28.07
+       они были 44x19 и 48x19 при рекомендованных 44x44: палец попадал мимо.
+       Отступы поднимают высоту до 45px. column-gap: 0 возвращает расстояние
+       между надписями к прежним 16px -- иначе подвал разъезжается вдвое. */
+    .app-footer a {
+      padding: 13px 8px; color: var(--text-faint); text-decoration: none;
+    }
     .app-footer a:hover { color: var(--text); }
   </style>
   <div id="app"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;color:#999;font-family:system-ui,sans-serif;font-size:14px">Загрузка…</div></div>
