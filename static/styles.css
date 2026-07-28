@@ -229,6 +229,15 @@ label.field + label.field { margin-top: 16px; }
 .toggle-row .toggle-info b { display: block; font-size: 14px; font-weight: 500; margin-bottom: 2px; }
 .toggle-row .toggle-info small { font-size: 12.5px; color: var(--text-dim); }
 .switch { position: relative; flex-shrink: 0; width: 40px; height: 22px; margin-top: 2px; }
+/* Нарисован тумблер 40x22 -- в него можно не попасть пальцем. Область нажатия
+   расширяем прозрачным слоем поверх, а не отступами: отступы раздули бы сам
+   рисунок (`.slider` растянут по `inset: 0`), а слой ничего не двигает --
+   строка настроек остаётся прежней высоты.
+   Всю строку нажимаемой намеренно НЕ делаем, хотя это и напрашивается: среди
+   этих тумблеров «Публиковать без проверки», и случайное касание текста рядом
+   включало бы отправку постов в канал без спроса. */
+.switch::after { content: ''; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%); width: 44px; height: 44px; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .slider { position: absolute; inset: 0; background: var(--border); border-radius: 99px; cursor: pointer; transition: .2s; }
 .slider:before { content: ''; position: absolute; width: 16px; height: 16px;
