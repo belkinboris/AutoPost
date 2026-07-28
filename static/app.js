@@ -2257,7 +2257,15 @@ function _scheduleApprovalRefresh(pending){
 // готовым постом. Формулировки — с явными подлежащими, без канцелярита.
 function _renderQueueStatus(c, pendingCount, opts){
   const {minQueue, connected, paused} = opts;
-  const counter = `<b>${pendingCount}</b> из ${minQueue}`;
+  // «N из M» осмысленно, пока очередь наполняется: M -- сколько постов мы
+  // держим наготове. Но плановая генерация глубину очереди не проверяет
+  // (tick -> generate_for_channel в tasks.py, гейт `pending_count < target`
+  // стоит только в _refill_if_active), поэтому постов легко становится больше
+  // цели -- и счётчик показывал «4 из 3». Когда запас набран, знаменатель
+  // больше ничего не объясняет: показываем просто число.
+  const counter = pendingCount >= minQueue
+    ? `<b>${pendingCount}</b>`
+    : `<b>${pendingCount}</b> из ${minQueue}`;
   const settingsLink = `onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)"`;
 
   if(paused){
@@ -2312,9 +2320,17 @@ function _renderQueueStatus(c, pendingCount, opts){
 
   // Режим "ничего не выходит без решения пользователя".
   const softControlMin = App.cfg?.soft_control_minutes || 30;
+  // Здесь было «Очередь заполнена. Как только опубликуете один пост, мы
+  // подготовим следующий» -- и это неправда. Проверено прямым вызовом решающих
+  // функций: канал с полной очередью и истёкшим интервалом попадает в
+  // `due_ids` в tick() и получает новый пост, публикации никто не ждёт.
+  // Обещание держало паузу, которой в системе нет.
+  // Интервал здесь намеренно не называем -- он написан в «Подробнее», и
+  // повторять его на виду значило бы вернуть тот самый повтор, который убрали
+  // в B6.
   const refillLine = pendingCount < minQueue
     ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
-    : `Очередь заполнена. Как только опубликуете один пост, мы подготовим следующий.`;
+    : `Запас готов — дальше посты добавляются по расписанию.`;
 
   // Механику «кнопка или таймер» показываем только когда постов ещё нет.
   // Как только пост появился, его карточка говорит это про себя сама -- либо
