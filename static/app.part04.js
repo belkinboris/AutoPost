@@ -22,7 +22,7 @@ function renderNewChannelSettings(){
     <label class="field mt"><span class="field-label">@username канала <span class="text-faint">(можно позже)</span></span>
       <input id="ncs_chat" placeholder="@my_channel" style="width:100%"></label>
 
-    <label class="field mt"><span class="field-label">Частота генерации</span>
+    <label class="field mt"><span class="field-label">Как часто писать новый пост</span>
       <select id="ncs_interval" style="width:100%">
         <option value="6">Каждые 6 часов</option>
         <option value="12" selected>Каждые 12 часов</option>
@@ -32,7 +32,7 @@ function renderNewChannelSettings(){
 
     <div class="card mt">
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="ncs_auto"><span class="slider"></span></label>
       </div>
     </div>

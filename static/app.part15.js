@@ -1,6 +1,6 @@
 
 // КРИТИЧНО (UX fix): "Опубликовать сейчас" раньше публиковало мгновенно и
-// безвозвратно в реальный Telegram-канал -- ни одной секунды на передумать,
+// безвозвратно в реальный Телеграм-канал -- ни одной секунды на передумать,
 // даже для только что созданного поста, который никто ещё не смотрел
 // (например сразу после подключения канала). Тот же принцип "минута на
 // отмену", что уже есть в режиме "публикация после подтверждения" (см.
@@ -27,12 +27,12 @@ async function publishPost(id){
     return;
   }
 
-  // P0 fix (third issue): если канал не подключён к Telegram, не пытаемся
+  // P0 fix (third issue): если канал не подключён к Телеграм, не пытаемся
   // публиковать вообще — показываем понятное сообщение вместо того чтобы
   // дать запросу дойти до Telegram API и упасть с технической ошибкой.
   const chan = App._chan;
   if (chan && (!chan.tg_chat || !chan.verified)) {
-    toast("Сначала подключите Telegram-канал, потом можно будет опубликовать пост.", "err");
+    toast("Сначала подключите Телеграм-канал, потом можно будет опубликовать пост.", "err");
     return;
   }
 
@@ -145,15 +145,15 @@ function pickChannelType(type){
   if(ta) ta.style.background=type==="thematic"?"var(--accent-soft)":"";
   if(tn) tn.style.border=type==="news"?"2px solid var(--accent)":"2px solid var(--border-soft)";
   if(tn) tn.style.background=type==="news"?"var(--accent-soft)":"";
-  if(tl) tl.textContent=type==="news"?"Проверять новости каждые":"Расписание";
+  if(tl) tl.textContent=type==="news"?"Как часто проверять новости":"Как часто писать новый пост";
 }
 
 function initCookieBanner(){
   if(localStorage.getItem("cookie_ok")) return;
   const b=document.createElement("div");
-  b.style.cssText="position:fixed;bottom:0;left:0;right:0;background:#171b20;color:#e4e8ec;font-size:13px;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;z-index:9999;";
-  b.innerHTML=`<span>Мы используем cookies. <a href="/legal/privacy" target="_blank" style="color:#d8b15e">Подробнее</a></span>
-    <button style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
+  b.style.cssText="position:fixed;bottom:0;left:0;right:0;background:#171b20;color:#e4e8ec;font-size:13px;padding:4px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;z-index:9999;";
+  b.innerHTML=`<span>Мы используем cookies. <a href="/legal/privacy" target="_blank" style="color:#d8b15e;display:inline-block;padding:14px 0">Подробнее</a></span>
+    <button style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;min-height:44px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
   document.body.appendChild(b);
 
   // Плашка прижата к низу и лежит ПОВЕРХ страницы, а запаса снизу у body не
@@ -164,6 +164,10 @@ function initCookieBanner(){
   // сама плашка при этом предлагает прочитать «Подробнее».
   // Отступ считаем по фактической высоте: на узком экране текст переносится,
   // и плашка становится выше.
+  // Внешний отступ плашки уменьшен с 12px до 4px: «Понятно» и «Подробнее»
+  // выросли до 44px по высоте (было 28 и 16), и свой воздух теперь несут
+  // они сами -- иначе плашка стала бы на 16px выше и опять полезла бы на
+  // юридические ссылки, которые сама же предлагает прочитать.
   const pad=()=>{ document.body.style.paddingBottom=b.offsetHeight+"px"; };
   pad();
   window.addEventListener("resize",pad);

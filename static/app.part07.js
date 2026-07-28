@@ -89,7 +89,7 @@ async function _doCcConfirmPublish(channelId, postId, tgChat){
   if(timedOut){
     // КРИТИЧНО (P0 fix): не показываем ошибку сразу. HTTP-запрос мог
     // зависнуть на фронте (медленная сеть, мобильное соединение), при этом
-    // backend мог успешно опубликовать пост в Telegram ДО таймаута. Сначала
+    // backend мог успешно опубликовать пост в Телеграм ДО таймаута. Сначала
     // проверяем реальный статус, и только если он не подтвердился —
     // показываем ошибку. Кнопка остаётся disabled всё это время, чтобы
     // исключить повторный клик и дублирующую публикацию.
@@ -158,7 +158,7 @@ async function renderPublishSuccess(channelId, tgChat, postId){
     <button class="btn-outline btn-sm" style="width:100%;justify-content:center;margin-top:10px"
       onclick="go('new_channel')">Создать следующий пост</button>
     <div style="text-align:center;margin-top:14px">
-      <a onclick="window.open('${tgUrl}','_blank')" style="font-size:13px;color:var(--text-faint);cursor:pointer;text-decoration:underline">Открыть пост в Telegram</a>
+      <a onclick="window.open('${tgUrl}','_blank')" style="font-size:13px;color:var(--text-faint);cursor:pointer;text-decoration:underline">Открыть пост в Телеграм</a>
     </div>
   </div>`;
 }

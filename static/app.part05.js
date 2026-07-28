@@ -63,6 +63,10 @@ async function _qsGenerateImpl(about){
   try{
     chan=await api("POST","/channels",{
       title, about,
+      // @username, введённый на шаге «Проанализировать мой канал». Раньше он
+      // никуда не сохранялся, и человеку приходилось вводить его заново при
+      // подключении.
+      tg_chat: App._qsChannelHandle || "",
       // Короче, чем дефолт — первый пост должен читаться за 10 секунд (см. задачу).
       post_length:"700-1200 знаков, 2-4 коротких абзаца, простой заголовок",
       // Idempotency key (task item E): повторный клик с тем же ключом
@@ -151,7 +155,7 @@ function renderFirstPostResult(channelId, post, about){
 
     <div id="fp_actions" style="display:none">
       <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
-        onclick="go('connect_channel',${channelId})">Подключить Telegram-канал</button>
+        onclick="go('connect_channel',${channelId})">Подключить Телеграм-канал</button>
     </div>
 
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;justify-content:center">

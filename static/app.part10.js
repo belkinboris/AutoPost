@@ -97,7 +97,7 @@ function renderPostCard(p, pubMs, channelEnabled){
 
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────
   const channelConnected = App._chan && App._chan.tg_chat && App._chan.verified;
-  const publishDisabledAttr = channelConnected ? "" : `disabled title="Сначала подключите Telegram-канал"`;
+  const publishDisabledAttr = channelConnected ? "" : `disabled title="Сначала подключите Телеграм-канал"`;
   let primaryBtn="", secondaryBtn="", menuItems="";
   if(isFailed){
     primaryBtn=`<button class="btn btn-sm" onclick="toggleEdit(${p.id})" id="edit_${p.id}">Исправить</button>`;
@@ -119,7 +119,7 @@ function renderPostCard(p, pubMs, channelEnabled){
   } else if(p.status==="published"){
     const chatLabel=(App._chan?.tg_chat||"").replace(/^https?:\/\/t\.me\//i,"").replace(/^@/,"");
     const tgUrl=p.tg_message_id&&chatLabel?`https://t.me/${chatLabel}/${p.tg_message_id}`:`https://t.me/${chatLabel}`;
-    primaryBtn=`<button class="btn-outline btn-sm" onclick="window.open('${tgUrl}','_blank')">Открыть в Telegram</button>`;
+    primaryBtn=`<button class="btn-outline btn-sm" onclick="window.open('${tgUrl}','_blank')">Открыть в Телеграм</button>`;
     secondaryBtn=`<button class="btn-ghost btn-sm" onclick="regenPost(${p.id})">Создать похожий</button>`;
     menuItems=`<button class="menu-item menu-item-danger" onclick="closePostMenu(${p.id});deletePost(${p.id})">Удалить из списка</button>`;
   } else {
@@ -127,7 +127,12 @@ function renderPostCard(p, pubMs, channelEnabled){
   }
   const menuBtn = menuItems ? `
     <div style="position:relative;margin-left:auto">
-      <button class="btn-ghost btn-sm" onclick="togglePostMenu(${p.id})" style="padding:6px 10px">⋯</button>
+      <!-- Замерено на 390px: цель была 32×27 — самая мелкая на экране, и стоит
+           вплотную к «Опубликовать сейчас», то есть к необратимому действию.
+           Промах пальцем здесь стоит поста, ушедшего в канал. У кнопки нет ни
+           фона, ни рамки, поэтому увеличенные отступы расширяют область
+           нажатия, ничего не меняя внешне. -->
+      <button class="btn-ghost btn-sm" onclick="togglePostMenu(${p.id})" style="padding:14px 16px;line-height:1">⋯</button>
       <div id="pmenu_${p.id}" class="post-menu hidden">${menuItems}</div>
     </div>` : "";
 

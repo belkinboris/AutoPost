@@ -77,20 +77,20 @@ async function renderAdvanced(){
           background:${(c.channel_type||'thematic')==='thematic'?'var(--accent-soft)':''};
           border-radius:12px;padding:12px;cursor:pointer">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">✍️ Тематический</div>
-          <div style="font-size:11px;color:var(--text-dim)">Публикует по расписанию</div>
+          <div style="font-size:11px;color:var(--text-dim)">Пишем по расписанию</div>
         </div>
         <div onclick="pickChannelType('news')" id="adv_type_news"
           style="border:2px solid ${(c.channel_type||'thematic')==='news'?'var(--accent)':'var(--border-soft)'};
           background:${(c.channel_type||'thematic')==='news'?'var(--accent-soft)':''};
           border-radius:12px;padding:12px;cursor:pointer">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">📡 Новостной</div>
-          <div style="font-size:11px;color:var(--text-dim)">Только при наличии новостей</div>
+          <div style="font-size:11px;color:var(--text-dim)">Пишем, только если есть новость</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title" id="adv_sched_title">${(c.channel_type||'thematic')==='news'?'Проверять новости каждые':'Расписание'}</div>
+      <div class="card-title" id="adv_sched_title">${(c.channel_type||'thematic')==='news'?'Как часто проверять новости':'Как часто писать новый пост'}</div>
       <div style="margin-bottom:12px">
         <div class="field-label" style="margin-bottom:8px">Интервал</div>
         <div class="seg" id="seg_int" style="flex-wrap:wrap">
@@ -105,17 +105,19 @@ async function renderAdvanced(){
         <input type="range" id="f_jitter" min="0" max="120" value="${c.interval_jitter_minutes||0}"
           oninput="$('jlbl').textContent=this.value"
           style="padding:4px 0;height:auto;box-shadow:none;border:none;background:none">
-        <div class="hint">Добавляет случайное отклонение — посты выходят в разное время, выглядит естественнее.</div>
+        <div class="hint">Сдвигает время написания на случайную величину, чтобы посты появлялись не по секундомеру.</div>
       </label>
       <div style="margin-top:14px">
-        <div class="field-label" style="margin-bottom:8px">Окно публикации (UTC)</div>
+        <div class="field-label" style="margin-bottom:8px">Когда писать посты (UTC)</div>
         <div class="row" style="gap:10px">
           <div style="flex:1"><div style="font-size:11px;color:var(--text-faint);margin-bottom:4px">С</div>
             <input id="f_ws" placeholder="09:00" value="${c.publish_window_start||""}"></div>
           <div style="flex:1"><div style="font-size:11px;color:var(--text-faint);margin-bottom:4px">До</div>
             <input id="f_we" placeholder="22:00" value="${c.publish_window_end||""}"></div>
         </div>
-        <div class="hint">Посты публикуются только в это время. Москва = UTC+3.</div>
+        <div class="hint">${c.auto_publish
+          ? "Пишем и публикуем посты только в это время. Москва = UTC+3."
+          : "Новые посты пишем только в это время. Когда они выйдут в канал — решаете вы. Москва = UTC+3."}</div>
       </div>
     </div>
 

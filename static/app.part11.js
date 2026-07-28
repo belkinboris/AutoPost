@@ -60,7 +60,7 @@ function renderQueueBody(){
   const paused = c.enabled === false;
   const queueStatus = _renderQueueStatus(c, pending.length, {minQueue, connected, paused});
 
-  const viewToggle=`<div style="display:flex;gap:8px;margin-bottom:14px">
+  const viewToggle=`<div style="display:flex;gap:8px;margin-bottom:4px">
     <button class="btn-sm ${_queueViewMode==="list"?"btn":"btn-outline"}" onclick="setQueueViewMode('list')">📋 Список</button>
     <button class="btn-sm ${_queueViewMode==="calendar"?"btn":"btn-outline"}" onclick="setQueueViewMode('calendar')">🗓 Календарь</button>
   </div>`;
@@ -157,7 +157,15 @@ function _scheduleApprovalRefresh(pending){
 // готовым постом. Формулировки — с явными подлежащими, без канцелярита.
 function _renderQueueStatus(c, pendingCount, opts){
   const {minQueue, connected, paused} = opts;
-  const counter = `<b>${pendingCount}</b> из ${minQueue}`;
+  // «N из M» осмысленно, пока очередь наполняется: M -- сколько постов мы
+  // держим наготове. Но плановая генерация глубину очереди не проверяет
+  // (tick -> generate_for_channel в tasks.py, гейт `pending_count < target`
+  // стоит только в _refill_if_active), поэтому постов легко становится больше
+  // цели -- и счётчик показывал «4 из 3». Когда запас набран, знаменатель
+  // больше ничего не объясняет: показываем просто число.
+  const counter = pendingCount >= minQueue
+    ? `<b>${pendingCount}</b>`
+    : `<b>${pendingCount}</b> из ${minQueue}`;
   const settingsLink = `onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)"`;
 
   if(paused){
@@ -212,9 +220,29 @@ function _renderQueueStatus(c, pendingCount, opts){
 
   // Режим "ничего не выходит без решения пользователя".
   const softControlMin = App.cfg?.soft_control_minutes || 30;
+  // Здесь было «Очередь заполнена. Как только опубликуете один пост, мы
+  // подготовим следующий» -- и это неправда. Проверено прямым вызовом решающих
+  // функций: канал с полной очередью и истёкшим интервалом попадает в
+  // `due_ids` в tick() и получает новый пост, публикации никто не ждёт.
+  // Обещание держало паузу, которой в системе нет.
+  // Интервал здесь намеренно не называем -- он написан в «Подробнее», и
+  // повторять его на виду значило бы вернуть тот самый повтор, который убрали
+  // в B6.
   const refillLine = pendingCount < minQueue
     ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
-    : `Очередь заполнена. Как только опубликуете один пост, мы подготовим следующий.`;
+    : `Запас готов — дальше посты добавляются по расписанию.`;
+
+  // Механику «кнопка или таймер» показываем только когда постов ещё нет.
+  // Как только пост появился, его карточка говорит это про себя сама -- либо
+  // «сам не опубликуется», либо обратный отсчёт, -- и объяснение на уровне
+  // экрана становится третьим пересказом одной мысли.
+  // Замерено на 390x844 до правки: первый пост начинался на 612px, то есть
+  // три четверти первого экрана уходили на шапку и объяснение, и на телефоне
+  // с адресной строкой пост оказывался за сгибом. Полный текст никуда не
+  // делся -- он под «Подробнее».
+  const mechanicsLine = pendingCount > 0 ? "" : ((App.user?.tg_chat_id
+    ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Телеграм."
+    : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки.") + " ");
 
   // КРИТИЧНО: здесь было «Ни один пост не попадёт в канал, пока вы не нажмёте
   // „Опубликовать“» -- и это неправда для основного сценария. Пост, который мы
@@ -228,21 +256,19 @@ function _renderQueueStatus(c, pendingCount, opts){
   return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
     <div style="font-size:13px;color:var(--accent-dark);font-weight:600">В очереди ${counter}</div>
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
-      ${App.user?.tg_chat_id
-        ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Telegram."
-        : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки."} ${refillLine}
+      ${mechanicsLine}${refillLine}
     </div>
-    <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
+    <button class="btn-ghost btn-sm" style="margin-top:0;padding:4px 0;color:var(--accent-dark)"
       onclick="toggleQueueHelp()" id="queue_help_btn">Подробнее ▾</button>
     <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
       Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>
       ${App.user?.tg_chat_id
-        ? `Пост по расписанию мы присылаем вам в Telegram, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
+        ? `Пост по расписанию мы присылаем вам в Телеграм, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
       Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>`
         : `Пока уведомления не подключены, обратный отсчёт не запускается: предупредить вас нам нечем, поэтому ни один пост не уходит в канал сам. Каждый ждёт вашей кнопки сколько угодно.<br>`}
       ${App.user?.tg_chat_id
-        ? `Мы дублируем такие посты вам в Telegram — можно решать с телефона, не заходя на сайт.`
-        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Telegram</a>, чтобы решать с телефона, не заходя на сайт.`}
+        ? `Мы дублируем такие посты вам в Телеграм — можно решать с телефона, не заходя на сайт.`
+        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Телеграм</a>, чтобы решать с телефона, не заходя на сайт.`}
       <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)" ${settingsLink}>Открыть настройки</button>
     </div>
   </div>`;
@@ -392,13 +418,19 @@ function renderSettings(){
   const lens=["50-100 слов","100-200 слов","200-350 слов"];
   $("tabbody").innerHTML=`
     <div class="card">
-      <div class="card-title">Telegram</div>
+      <div class="card-title">Телеграм</div>
       <label class="field"><span class="field-label">Название</span>
         <input id="f_title" value="${esc(c.title)}"></label>
+      <!-- Подтверждение показывает только «✓ Проверено», без подписи канала.
+           Замер на 390px: строка «✓ Проверено · @канал» не помещалась в 214px
+           и обрезалась многоточием -- то есть вторая копия хэндла была ещё и
+           нечитаемой, а первая, целая, стоит в шапке на 365px выше, на том же
+           экране. Сам хэндл никуда не делся: «Изменить» открывает поле, где он
+           лежит целиком и правится. -->
       <label class="field mt"><span class="field-label">@username, ссылка t.me/ или ID</span>
         ${c.verified
           ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--green-bg);border-radius:10px;margin-bottom:6px;flex-wrap:nowrap;overflow:hidden">
-               <span style="color:var(--green);font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✓ Проверено · ${esc(c.tg_chat)}</span>
+               <span style="color:var(--green);font-weight:600;font-size:13px">✓ Проверено</span>
                <button class="btn-ghost btn-sm" onclick="showVerifyInput()" style="flex-shrink:0;font-size:12px">Изменить</button>
              </div>
              <div id="verifyInputBlock" class="hidden">
@@ -442,7 +474,7 @@ function renderSettings(){
     <div class="card" id="settings_automation_card">
       <div class="card-title">Автоматизация</div>
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="sw_auto" ${c.auto_publish?"checked":""}><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
@@ -451,13 +483,13 @@ function renderSettings(){
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Уведомления в Telegram</div>
+      <div class="card-title">Уведомления в Телеграм</div>
       <div style="margin-bottom:14px" id="tg_notif_block">
         ${App.user?.tg_chat_id
           ? '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--green-bg);border-radius:10px;font-size:14px;color:var(--green)">✅ Подключено — уведомления активны</div>'
           : '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;line-height:1.6">Нажмите кнопку — бот пришлёт приветствие и начнёт отправлять уведомления.</div>'
             + '<button class="btn" onclick="openTgConnect()" style="display:inline-flex;margin-bottom:4px">💬 Подключить уведомления →</button>'
-            + '<div class="hint" style="margin-top:8px">Откроется бот — нажми Start</div>'
+            + '<div class="hint" style="margin-top:8px">Откроется бот — нажмите Start</div>'
         }
       </div>
       <div class="toggle-row">
@@ -470,9 +502,13 @@ function renderSettings(){
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Протестировать</div>
-      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Сгенерировать тестовый пост с текущими настройками.</p>
-      <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Создать тестовый пост</button>
+      <div class="card-title">Проверить настройки</div>
+      <!-- Слово «тестовый» обещало пробный прогон без последствий, а кнопка
+           дёргает тот же /generate, что и «Написать пост сейчас» в очереди:
+           пост настоящий, тратит токены и остаётся в очереди. Называем вещи
+           одинаково в обоих местах и сразу говорим про расход. -->
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Напишем пост прямо сейчас — посмотрите, что получается с текущими настройками. Пост обычный: тратит токены и встаёт в очередь, сам не опубликуется.</p>
+      <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Написать пост сейчас</button>
       <div id="test_result" style="margin-top:12px"></div>
     </div>
     <div class="row between mt-lg">

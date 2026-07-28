@@ -9,13 +9,13 @@ function renderNewChannel(){
       <label class="field"><span class="field-label">Название (видно только вам)</span>
         <input id="nc_title" placeholder="Например: Крипта без воды" maxlength="80"></label>
 
-      <div class="field mt"><span class="field-label">Telegram-канал</span>
+      <div class="field mt"><span class="field-label">Телеграм-канал</span>
         <div id="nc_verify_block">
           <div class="row" style="gap:8px">
             <input id="nc_chat" placeholder="@my_channel или https://t.me/channel" style="flex:1">
             <button class="btn-outline btn-sm" onclick="ncVerify()" id="nc_vbtn" style="white-space:nowrap">Проверить</button>
           </div>
-          <div class="hint">Сначала добавь бота <b>@${esc(App.cfg?.bot_username||"…")}</b> в админы канала, потом вставь @username и нажми «Проверить».</div>
+          <div class="hint">Сначала добавьте бота <b>@${esc(App.cfg?.bot_username||"…")}</b> в админы канала, потом вставьте @username и нажмите «Проверить».</div>
           <div id="nc_vmsg" style="font-size:13px;margin-top:6px"></div>
           <button class="btn-ghost btn-sm" onclick="ncSkipVerify()"
             style="margin-top:8px;font-size:13px;color:var(--accent)">Подключу позже →</button>
@@ -112,7 +112,7 @@ function renderNewChannel(){
       </div>
 
       <div>
-        <div class="field-label" style="margin-bottom:8px" id="nc_freq_label">Частота публикаций</div>
+        <div class="field-label" style="margin-bottom:8px" id="nc_freq_label">Как часто писать новый пост</div>
         <div class="seg" id="nc_hzs" style="flex-wrap:wrap">
           <button onclick="ncHz(0.25,this)">15 мин</button>
           <button onclick="ncHz(0.5,this)">30 мин</button>
@@ -142,13 +142,13 @@ function ncPickType(type){
   if(type==="thematic"){
     if(thematic){thematic.style.border="2px solid var(--accent)";thematic.style.background="var(--accent-soft)";}
     if(news){news.style.border="2px solid var(--border-soft)";news.style.background="";}
-    if(hint) hint.textContent="Тематический: публикует по расписанию всегда. Токены за каждый пост.";
-    if(label) label.textContent="Частота публикаций";
+    if(hint) hint.textContent="Тематический: пишем новый пост по расписанию, даже если новостей нет. Токены тратятся на каждый пост.";
+    if(label) label.textContent="Как часто писать новый пост";
   } else {
     if(news){news.style.border="2px solid var(--accent)";news.style.background="var(--accent-soft)";}
     if(thematic){thematic.style.border="2px solid var(--border-soft)";thematic.style.background="";}
-    if(hint) hint.textContent="Новостной: проверяет новости по расписанию. Токены только при публикации.";
-    if(label) label.textContent="Проверять новости каждые";
+    if(hint) hint.textContent="Новостной: проверяем новости по расписанию и пишем, только если есть о чём. Токены тратятся только тогда.";
+    if(label) label.textContent="Как часто проверять новости";
   }
 }
 

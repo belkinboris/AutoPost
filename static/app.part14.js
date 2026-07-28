@@ -46,7 +46,7 @@ async function renderBilling(){
     </div>
     <div class="card" style="margin-bottom:16px">
       <button onclick="togglePayHistory()" id="pay_hist_btn"
-        style="background:none;border:none;cursor:pointer;font-size:14px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;width:100%;padding:0 0 12px">
+        style="background:none;border:none;cursor:pointer;font-size:14px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;width:100%;padding:0;min-height:44px">
         📋 История платежей <span id="pay_hist_arrow" style="font-size:12px;color:var(--text-faint)">▶</span>
       </button>
       <div id="payList" class="hidden text-faint"></div>
@@ -62,7 +62,7 @@ async function renderBilling(){
         <button class="btn-outline btn-sm" onclick="navigator.clipboard.writeText('${esc(code)}').then(()=>toast('Скопировано','ok'))">Копировать</button>
       </div>
       <div style="font-size:13px;color:var(--text-dim);background:var(--surface2);border-radius:10px;padding:12px 14px;line-height:1.7">
-        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">@maintrpost_bot</a><br>
+        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent);display:inline-block;padding:14px 0">@maintrpost_bot</a><br>
         2. «Открыть АвтоПост» → Зарегистрироваться<br>
         3. Введите реферальный код: <b>${esc(code)}</b>
       </div>
@@ -81,11 +81,24 @@ async function renderBilling(){
           }
         }
       });
+      // В истории платежей не было главного — суммы. Строка выглядела как
+      // «27.07.2026, 14:05 · 600 000 ток.»: внутренняя единица учёта на первом
+      // месте и ни рубля. Человек заходит сюда посмотреть, сколько и за что
+      // заплатил, поэтому деньги вынесены вперёд, а токены остались справочно.
+      // Прежний класс .src-url не подошёл: у него white-space:nowrap, и вторая
+      // строка в него не помещалась.
       $("payList").innerHTML=ps.length
-        ?ps.map(p=>`<div class="src-row">
-            <span class="src-url">${new Date(p.created_at+"Z").toLocaleString("ru-RU")} · ${fmt(p.tokens)} ток.</span>
-            <span class="chip ${p.status==="paid"?"chip-green":"chip-orange"}">${p.status==="paid"?"оплачено":"ожидает"}</span>
-          </div>`).join("")
+        ?ps.map(p=>{
+            const pkg=(App.cfg?.packages||[]).find(x=>x.id===p.package_id);
+            const when=new Date(p.created_at+"Z").toLocaleString("ru-RU");
+            return `<div class="src-row" style="align-items:flex-start">
+              <div style="min-width:0">
+                <div style="font-size:13px;color:var(--text);font-weight:600">${_rub(p.rub||0)}\u00A0₽${pkg?` · ${esc(pkg.title)}`:""}</div>
+                <div style="font-size:12px;color:var(--text-faint);margin-top:2px">${when} · ${fmt(p.tokens)} токенов</div>
+              </div>
+              <span class="chip ${p.status==="paid"?"chip-green":"chip-orange"}">${p.status==="paid"?"оплачено":"ожидает оплаты"}</span>
+            </div>`;
+          }).join("")
         :`<p style="font-size:13px;color:var(--text-faint)">Платежей пока не было.</p>`;
     }catch(_){}
   };

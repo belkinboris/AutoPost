@@ -152,7 +152,13 @@ label.field + label.field { margin-top: 16px; }
   height: auto; -webkit-line-clamp: unset; }
 .chan-connect-hint { margin-top: 14px; padding: 12px; border: 1.5px dashed var(--border); border-radius: 10px;
   font-size: 13px; color: var(--text-dim); line-height: 1.5; }
-.chan-connect-hint a { color: var(--accent-dark); font-weight: 600; }
+/* «Как подключить →» разрывалась переносом: «Как подключить» оставалось в
+   конце строки (107x16), а стрелка уезжала на следующую отдельной целью
+   13x16 -- в неё попасть нельзя вовсе. `nowrap` держит их вместе, отступы
+   поднимают высоту до 44px. Горизонтальных отступов не даём: надпись и так
+   120px шириной, а лишние съели бы выравнивание с текстом подсказки. */
+.chan-connect-hint a { color: var(--accent-dark); font-weight: 600;
+  display: inline-block; white-space: nowrap; padding: 14px 0; }
 
 /* Календарь очереди (task item: вид по датам) */
 .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
@@ -223,6 +229,15 @@ label.field + label.field { margin-top: 16px; }
 .toggle-row .toggle-info b { display: block; font-size: 14px; font-weight: 500; margin-bottom: 2px; }
 .toggle-row .toggle-info small { font-size: 12.5px; color: var(--text-dim); }
 .switch { position: relative; flex-shrink: 0; width: 40px; height: 22px; margin-top: 2px; }
+/* Нарисован тумблер 40x22 -- в него можно не попасть пальцем. Область нажатия
+   расширяем прозрачным слоем поверх, а не отступами: отступы раздули бы сам
+   рисунок (`.slider` растянут по `inset: 0`), а слой ничего не двигает --
+   строка настроек остаётся прежней высоты.
+   Всю строку нажимаемой намеренно НЕ делаем, хотя это и напрашивается: среди
+   этих тумблеров «Публиковать без проверки», и случайное касание текста рядом
+   включало бы отправку постов в канал без спроса. */
+.switch::after { content: ''; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%); width: 44px; height: 44px; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .slider { position: absolute; inset: 0; background: var(--border); border-radius: 99px; cursor: pointer; transition: .2s; }
 .slider:before { content: ''; position: absolute; width: 16px; height: 16px;
@@ -488,3 +503,35 @@ button, a, .chip, .tab, .seg button, .back-link, .brand, .token-pill {
 .brand, .back-link, .tab, .btn, .btn-sm, .btn-outline, .btn-ghost, .btn-danger, .btn-green {
   -webkit-user-select: none; user-select: none;
 }
+
+/* ── Минимальная область нажатия ─────────────────────────────
+   Замерено на 390×844 28.07: из элементов управления в кабинете ниже 44px
+   было 94 — «Опубликовать сейчас» 150×27, «Изменить» 78×27, вкладки 38px,
+   переключатели в «Расширенных» 30px, «Читать полностью» 316×24. B4 и B13
+   чинили по одному случаю («⋯» и подвал), но это не случаи, а класс: любая
+   кнопка с `padding: 6-8px` даёт 27-30px при 13px шрифта.
+   44px — та же планка, по которой чинили «⋯» и подвал.
+   Блок стоит в конце файла намеренно: мобильные медиазапросы выше
+   уменьшают `.btn-sm` до `padding: 6px 10px`, и правило должно их перебить. */
+.btn, .btn-sm, .btn-outline, .btn-ghost, .btn-danger, .btn-green,
+.tab, .seg button, .token-pill, .brand, .back-link, .expand-btn {
+  min-height: 44px;
+}
+/* min-height работает только если элемент умеет центрировать содержимое по
+   вертикали. У `.btn` и `.token-pill` это уже есть, остальным добавляем. */
+.btn-sm, .btn-ghost, .btn-danger, .tab, .seg button {
+  display: inline-flex; align-items: center; justify-content: center;
+}
+/* «Читать полностью ↓» и «← все каналы» -- на всю ширину и по левому краю,
+   поэтому им flex без центрирования по горизонтали. */
+.expand-btn, .back-link { display: flex; align-items: center; }
+.back-link { display: inline-flex; }
+
+/* Отступы вокруг выросших кнопок. Кнопка высотой 44px с текстом 13px несёт
+   внутри ~15px воздуха сверху и снизу -- внешние 12-24px после этого удваивают
+   зазор и съедают первый экран. Замер: без этой правки первый пост уезжал
+   с 540px на 617px из 844, то есть терялось всё, что дали B7 и B14. */
+.back-row .back-link { margin-bottom: -20px; }
+.tabs { margin-bottom: 18px; }
+.post-actions { margin-top: 2px; }
+.expand-btn { margin-top: 0; }

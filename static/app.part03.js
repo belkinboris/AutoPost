@@ -77,7 +77,11 @@ async function renderDashboard(){
 function renderChanCard(c){
   const initial=(c.title||"?").trim().charAt(0).toUpperCase()||"?";
   const connected=!!(c.tg_chat && c.verified);
-  const handle=c.tg_chat?esc(c.tg_chat):"канал не указан";
+  // Та же пара, что и на экране канала: «канал не указан» под названием и
+  // «Канал ещё не подключён.» в рамке под ним. Рамка появляется при том же
+  // условии и вдобавок даёт ссылку «Как подключить →» -- подпись без хэндла
+  // не добавляет ничего, кроме повтора.
+  const handle=c.tg_chat?esc(c.tg_chat):"";
 
   if(!connected){
     const hint=c.tg_chat?"Бот пока не подтверждён администратором.":"Канал ещё не подключён.";
@@ -86,7 +90,7 @@ function renderChanCard(c){
         <div class="tg-ava">${initial}</div>
         <div style="min-width:0">
           <h3>${esc(c.title)}</h3>
-          <div class="chan-handle">${handle}</div>
+          ${handle?`<div class="chan-handle">${handle}</div>`:""}
         </div>
       </div>
       <div class="chan-connect-hint">${hint} <a href="/how-to" target="_blank" rel="noopener" onclick="event.stopPropagation()">Как подключить →</a></div>
@@ -153,6 +157,9 @@ function renderQuickStart(){
   App.channelId = null;
   App._qsAbout = "";
   App._chan = null;
+  // Сбрасываем и @username: иначе канал, введённый в прошлой попытке
+  // онбординга, молча приклеился бы к следующему созданному каналу.
+  App._qsChannelHandle = "";
 
   // Экран выбора: что делать сначала?
   // «Пропустить» здесь было дважды: сверху слева и под кнопками выбора. Обе
@@ -170,7 +177,7 @@ function renderQuickStart(){
         onclick="qsChooseGenerate()">Сгенерировать первый пост</button>
       <button onclick="qsChooseAnalyze()"
         style="width:100%;padding:16px;font-size:16px;border-radius:10px;border:1.5px solid var(--border);background:var(--surface);cursor:pointer;font-family:inherit;color:var(--text)">
-        Проанализировать мой Telegram-канал
+        Проанализировать мой Телеграм-канал
       </button>
     </div>
     <div style="text-align:center;margin-top:20px">
@@ -199,7 +206,8 @@ function qsChooseAnalyze(){
       <input id="qs_channel_link" placeholder="@mychannel или t.me/mychannel" style="font-size:15px;width:100%">
     </div>
     <p style="color:var(--text-faint);font-size:13px;margin-top:8px;text-align:center">
-      Сгенерируем пример поста в стиле вашего канала.
+      Запомним канал, чтобы не вводить его при подключении. Стиль скопируем позже,
+      в настройках канала — там для этого есть отдельный шаг.
     </p>
     <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
       onclick="qsAnalyzeSubmit()">Продолжить</button>
@@ -216,7 +224,13 @@ function qsAnalyzeSubmit(){
   const raw=($("qs_channel_link").value||"").trim();
   if(!raw) return toast("Укажите @username канала","err");
   const handle=raw.replace(/^https?:\/\/t\.me\//,"@").replace(/^t\.me\//,"@").replace(/^@+/,"@");
-  renderQuickStartGenerate(handle);
+  // Раньше handle уходил в renderQuickStartGenerate как ТЕМА и подставлялся в
+  // поле «о чём сделать пост». Человек, попросивший «пиши в стиле моего
+  // канала», получал пост про строку «@durov», а у канала навсегда
+  // оставалась тема «@durov». Теперь запоминаем его как username канала --
+  // он пригодится при подключении, -- а тему спрашиваем отдельно.
+  App._qsChannelHandle = handle;
+  renderQuickStartGenerate();
 }
 
 function renderQuickStartGenerate(prefillTopic){
@@ -229,6 +243,7 @@ function renderQuickStartGenerate(prefillTopic){
            покажем пример поста» и «канал подключите позже». Второй абзац
            добавлял к этому только перечисление настроек -- его и оставили. -->
       <p style="color:var(--text-dim)">Сначала покажем пример поста. Канал, стиль, длину и расписание настроите потом.</p>
+      ${App._qsChannelHandle?`<p style="color:var(--text-faint);font-size:13px;margin-top:6px">Канал ${esc(App._qsChannelHandle)} запомнили — подключим его после первого поста.</p>`:""}
     </div>
     <div class="card">
       <textarea id="qs_about" rows="3" placeholder="Например: M&A сделки в России, Roblox, салон красоты, криптоновости" style="font-size:15px"></textarea>

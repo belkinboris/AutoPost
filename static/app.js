@@ -294,7 +294,7 @@ function _tgAuthInitData(){
   try{ return window.Telegram?.WebApp?.initData || ""; }catch(_){ return ""; }
 }
 function _tgAuthFirstName(){
-  try{ return window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || "Telegram"; }catch(_){ return "Telegram"; }
+  try{ return window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || "Телеграм"; }catch(_){ return "Телеграм"; }
 }
 function toggleTgEmailFallback(){
   const c=$("email_auth_card");
@@ -326,7 +326,7 @@ async function tgContinueAuth(){
     await boot();
   }catch(e){
     tgHaptic("error");
-    toast(e&&e.message?e.message:"Не удалось войти через Telegram","err");
+    toast(e&&e.message?e.message:"Не удалось войти через Телеграм","err");
     if(btn){btn.innerHTML=originalLabel;btn.disabled=false;}
   }
 }
@@ -341,9 +341,9 @@ function renderAuth(mode="login"){
   const tgInitData=_tgAuthInitData();
   $("app").innerHTML=`<div class="auth-wrap"><div class="auth-box">
     <div class="auth-logo">Авто<span>пост</span></div>
-    <div class="auth-sub">ИИ пишет посты для вашего Telegram-канала — на автопилоте или после подтверждения</div>
+    <div class="auth-sub">ИИ пишет посты для вашего Телеграм-канала — на автопилоте или после подтверждения</div>
     ${tgInitData?`<div class="card" style="text-align:center">
-      <div style="font-size:14px;color:var(--text-dim);margin-bottom:14px">Вы открыли АвтоПост в Telegram</div>
+      <div style="font-size:14px;color:var(--text-dim);margin-bottom:14px">Вы открыли АвтоПост в Телеграм</div>
       <button class="btn" style="width:100%;justify-content:center;padding:14px" id="tgContinueBtn" onclick="tgContinueAuth()">Продолжить как ${esc(_tgAuthFirstName())}</button>
       <div style="margin-top:12px">
         <button class="btn-ghost btn-sm" style="color:var(--text-faint)" onclick="toggleTgEmailFallback()">Уже есть аккаунт с email? →</button>
@@ -561,7 +561,11 @@ async function renderDashboard(){
 function renderChanCard(c){
   const initial=(c.title||"?").trim().charAt(0).toUpperCase()||"?";
   const connected=!!(c.tg_chat && c.verified);
-  const handle=c.tg_chat?esc(c.tg_chat):"канал не указан";
+  // Та же пара, что и на экране канала: «канал не указан» под названием и
+  // «Канал ещё не подключён.» в рамке под ним. Рамка появляется при том же
+  // условии и вдобавок даёт ссылку «Как подключить →» -- подпись без хэндла
+  // не добавляет ничего, кроме повтора.
+  const handle=c.tg_chat?esc(c.tg_chat):"";
 
   if(!connected){
     const hint=c.tg_chat?"Бот пока не подтверждён администратором.":"Канал ещё не подключён.";
@@ -570,7 +574,7 @@ function renderChanCard(c){
         <div class="tg-ava">${initial}</div>
         <div style="min-width:0">
           <h3>${esc(c.title)}</h3>
-          <div class="chan-handle">${handle}</div>
+          ${handle?`<div class="chan-handle">${handle}</div>`:""}
         </div>
       </div>
       <div class="chan-connect-hint">${hint} <a href="/how-to" target="_blank" rel="noopener" onclick="event.stopPropagation()">Как подключить →</a></div>
@@ -637,6 +641,9 @@ function renderQuickStart(){
   App.channelId = null;
   App._qsAbout = "";
   App._chan = null;
+  // Сбрасываем и @username: иначе канал, введённый в прошлой попытке
+  // онбординга, молча приклеился бы к следующему созданному каналу.
+  App._qsChannelHandle = "";
 
   // Экран выбора: что делать сначала?
   // «Пропустить» здесь было дважды: сверху слева и под кнопками выбора. Обе
@@ -654,7 +661,7 @@ function renderQuickStart(){
         onclick="qsChooseGenerate()">Сгенерировать первый пост</button>
       <button onclick="qsChooseAnalyze()"
         style="width:100%;padding:16px;font-size:16px;border-radius:10px;border:1.5px solid var(--border);background:var(--surface);cursor:pointer;font-family:inherit;color:var(--text)">
-        Проанализировать мой Telegram-канал
+        Проанализировать мой Телеграм-канал
       </button>
     </div>
     <div style="text-align:center;margin-top:20px">
@@ -683,7 +690,8 @@ function qsChooseAnalyze(){
       <input id="qs_channel_link" placeholder="@mychannel или t.me/mychannel" style="font-size:15px;width:100%">
     </div>
     <p style="color:var(--text-faint);font-size:13px;margin-top:8px;text-align:center">
-      Сгенерируем пример поста в стиле вашего канала.
+      Запомним канал, чтобы не вводить его при подключении. Стиль скопируем позже,
+      в настройках канала — там для этого есть отдельный шаг.
     </p>
     <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
       onclick="qsAnalyzeSubmit()">Продолжить</button>
@@ -700,7 +708,13 @@ function qsAnalyzeSubmit(){
   const raw=($("qs_channel_link").value||"").trim();
   if(!raw) return toast("Укажите @username канала","err");
   const handle=raw.replace(/^https?:\/\/t\.me\//,"@").replace(/^t\.me\//,"@").replace(/^@+/,"@");
-  renderQuickStartGenerate(handle);
+  // Раньше handle уходил в renderQuickStartGenerate как ТЕМА и подставлялся в
+  // поле «о чём сделать пост». Человек, попросивший «пиши в стиле моего
+  // канала», получал пост про строку «@durov», а у канала навсегда
+  // оставалась тема «@durov». Теперь запоминаем его как username канала --
+  // он пригодится при подключении, -- а тему спрашиваем отдельно.
+  App._qsChannelHandle = handle;
+  renderQuickStartGenerate();
 }
 
 function renderQuickStartGenerate(prefillTopic){
@@ -713,6 +727,7 @@ function renderQuickStartGenerate(prefillTopic){
            покажем пример поста» и «канал подключите позже». Второй абзац
            добавлял к этому только перечисление настроек -- его и оставили. -->
       <p style="color:var(--text-dim)">Сначала покажем пример поста. Канал, стиль, длину и расписание настроите потом.</p>
+      ${App._qsChannelHandle?`<p style="color:var(--text-faint);font-size:13px;margin-top:6px">Канал ${esc(App._qsChannelHandle)} запомнили — подключим его после первого поста.</p>`:""}
     </div>
     <div class="card">
       <textarea id="qs_about" rows="3" placeholder="Например: M&A сделки в России, Roblox, салон красоты, криптоновости" style="font-size:15px"></textarea>
@@ -757,7 +772,7 @@ function renderNewChannelSettings(){
     <label class="field mt"><span class="field-label">@username канала <span class="text-faint">(можно позже)</span></span>
       <input id="ncs_chat" placeholder="@my_channel" style="width:100%"></label>
 
-    <label class="field mt"><span class="field-label">Частота генерации</span>
+    <label class="field mt"><span class="field-label">Как часто писать новый пост</span>
       <select id="ncs_interval" style="width:100%">
         <option value="6">Каждые 6 часов</option>
         <option value="12" selected>Каждые 12 часов</option>
@@ -767,7 +782,7 @@ function renderNewChannelSettings(){
 
     <div class="card mt">
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="ncs_auto"><span class="slider"></span></label>
       </div>
     </div>
@@ -917,6 +932,10 @@ async function _qsGenerateImpl(about){
   try{
     chan=await api("POST","/channels",{
       title, about,
+      // @username, введённый на шаге «Проанализировать мой канал». Раньше он
+      // никуда не сохранялся, и человеку приходилось вводить его заново при
+      // подключении.
+      tg_chat: App._qsChannelHandle || "",
       // Короче, чем дефолт — первый пост должен читаться за 10 секунд (см. задачу).
       post_length:"700-1200 знаков, 2-4 коротких абзаца, простой заголовок",
       // Idempotency key (task item E): повторный клик с тем же ключом
@@ -1005,7 +1024,7 @@ function renderFirstPostResult(channelId, post, about){
 
     <div id="fp_actions" style="display:none">
       <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
-        onclick="go('connect_channel',${channelId})">Подключить Telegram-канал</button>
+        onclick="go('connect_channel',${channelId})">Подключить Телеграм-канал</button>
     </div>
 
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;justify-content:center">
@@ -1131,7 +1150,7 @@ async function renderConnectChannel(){
   $("app").innerHTML=`<div class="wrap" style="max-width:560px">
     <button class="back-link" style="margin-top:12px" onclick="go('channel',${c.id})">← Назад</button>
     <div class="page-head" style="text-align:center;margin-top:8px">
-      <h1 style="font-family:'Instrument Serif',serif;font-size:26px;font-weight:400">Подключите Telegram-канал</h1>
+      <h1 style="font-family:'Instrument Serif',serif;font-size:26px;font-weight:400">Подключите Телеграм-канал</h1>
       <p style="color:var(--text-dim)">Чтобы АвтоПост мог публиковать посты, добавьте бота-публикатора администратором канала.</p>
     </div>
 
@@ -1356,7 +1375,7 @@ async function _doCcConfirmPublish(channelId, postId, tgChat){
   if(timedOut){
     // КРИТИЧНО (P0 fix): не показываем ошибку сразу. HTTP-запрос мог
     // зависнуть на фронте (медленная сеть, мобильное соединение), при этом
-    // backend мог успешно опубликовать пост в Telegram ДО таймаута. Сначала
+    // backend мог успешно опубликовать пост в Телеграм ДО таймаута. Сначала
     // проверяем реальный статус, и только если он не подтвердился —
     // показываем ошибку. Кнопка остаётся disabled всё это время, чтобы
     // исключить повторный клик и дублирующую публикацию.
@@ -1425,7 +1444,7 @@ async function renderPublishSuccess(channelId, tgChat, postId){
     <button class="btn-outline btn-sm" style="width:100%;justify-content:center;margin-top:10px"
       onclick="go('new_channel')">Создать следующий пост</button>
     <div style="text-align:center;margin-top:14px">
-      <a onclick="window.open('${tgUrl}','_blank')" style="font-size:13px;color:var(--text-faint);cursor:pointer;text-decoration:underline">Открыть пост в Telegram</a>
+      <a onclick="window.open('${tgUrl}','_blank')" style="font-size:13px;color:var(--text-faint);cursor:pointer;text-decoration:underline">Открыть пост в Телеграм</a>
     </div>
   </div>`;
 }
@@ -1439,13 +1458,13 @@ function renderNewChannel(){
       <label class="field"><span class="field-label">Название (видно только вам)</span>
         <input id="nc_title" placeholder="Например: Крипта без воды" maxlength="80"></label>
 
-      <div class="field mt"><span class="field-label">Telegram-канал</span>
+      <div class="field mt"><span class="field-label">Телеграм-канал</span>
         <div id="nc_verify_block">
           <div class="row" style="gap:8px">
             <input id="nc_chat" placeholder="@my_channel или https://t.me/channel" style="flex:1">
             <button class="btn-outline btn-sm" onclick="ncVerify()" id="nc_vbtn" style="white-space:nowrap">Проверить</button>
           </div>
-          <div class="hint">Сначала добавь бота <b>@${esc(App.cfg?.bot_username||"…")}</b> в админы канала, потом вставь @username и нажми «Проверить».</div>
+          <div class="hint">Сначала добавьте бота <b>@${esc(App.cfg?.bot_username||"…")}</b> в админы канала, потом вставьте @username и нажмите «Проверить».</div>
           <div id="nc_vmsg" style="font-size:13px;margin-top:6px"></div>
           <button class="btn-ghost btn-sm" onclick="ncSkipVerify()"
             style="margin-top:8px;font-size:13px;color:var(--accent)">Подключу позже →</button>
@@ -1542,7 +1561,7 @@ function renderNewChannel(){
       </div>
 
       <div>
-        <div class="field-label" style="margin-bottom:8px" id="nc_freq_label">Частота публикаций</div>
+        <div class="field-label" style="margin-bottom:8px" id="nc_freq_label">Как часто писать новый пост</div>
         <div class="seg" id="nc_hzs" style="flex-wrap:wrap">
           <button onclick="ncHz(0.25,this)">15 мин</button>
           <button onclick="ncHz(0.5,this)">30 мин</button>
@@ -1572,13 +1591,13 @@ function ncPickType(type){
   if(type==="thematic"){
     if(thematic){thematic.style.border="2px solid var(--accent)";thematic.style.background="var(--accent-soft)";}
     if(news){news.style.border="2px solid var(--border-soft)";news.style.background="";}
-    if(hint) hint.textContent="Тематический: публикует по расписанию всегда. Токены за каждый пост.";
-    if(label) label.textContent="Частота публикаций";
+    if(hint) hint.textContent="Тематический: пишем новый пост по расписанию, даже если новостей нет. Токены тратятся на каждый пост.";
+    if(label) label.textContent="Как часто писать новый пост";
   } else {
     if(news){news.style.border="2px solid var(--accent)";news.style.background="var(--accent-soft)";}
     if(thematic){thematic.style.border="2px solid var(--border-soft)";thematic.style.background="";}
-    if(hint) hint.textContent="Новостной: проверяет новости по расписанию. Токены только при публикации.";
-    if(label) label.textContent="Проверять новости каждые";
+    if(hint) hint.textContent="Новостной: проверяем новости по расписанию и пишем, только если есть о чём. Токены тратятся только тогда.";
+    if(label) label.textContent="Как часто проверять новости";
   }
 }
 
@@ -1658,7 +1677,7 @@ async function ncGenerate(){
   $("nc_results").classList.remove("hidden");
   $("nc_results").innerHTML=`
     <h2 style="font-family:'Instrument Serif',serif;font-size:22px;font-weight:400;margin-bottom:4px">Варианты постов</h2>
-    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">Генерирую три варианта — выбери понравившийся.</p>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">Генерирую три варианта — выберите понравившийся.</p>
     <div id="ob_posts"></div>
     <div id="ob_load">
       ${[0,1,2].map(i=>`<div style="background:var(--surface);border:1.5px solid var(--border-soft);border-radius:var(--radius);padding:20px;margin-bottom:14px;opacity:${1-i*0.2}">
@@ -1776,12 +1795,18 @@ async function renderChannel(){
   if(App._chan && App._chan.id!==c.id){_queueViewMode="list";_calMonth=null;_calSelectedDate=null;}
   App._chan=c;
   const notConnected=!c.tg_chat?`<div style="background:var(--accent-soft);border:1px solid #e8d5bb;border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent-dark)">
-    📡 Канал не подключён к Telegram.
+    📡 Канал не подключён к Телеграм.
     <button class="btn-ghost btn-sm" onclick="App.tab='settings';renderChannel()" style="color:var(--accent);font-weight:600">Подключить →</button></div>`:"";
 
   // Тот же визуальный язык что и карточки на дашборде (renderChanCard,
   // app.part03.js) — раньше здесь были старые chip-пилюли, не обновлённые
   // при редизайне карточек.
+  // Строку с хэндлом рисуем только когда хэндл есть. Раньше вместо него
+  // стояло «канал будет указан после подключения» -- ровно та же мысль, что
+  // в баннере на 60px выше, и появлялись они всегда вместе: баннер рисуется
+  // при том же условии `!c.tg_chat`. Замер по методу поиска дублей постов
+  // (основы слов + Жаккар) дал этой паре 0.5 -- выше, чем у любых двух
+  // осмысленно разных строк на экране.
   const initial=(c.title||"?").trim().charAt(0).toUpperCase()||"?";
   const connected=!!(c.tg_chat && c.verified);
   // КРИТИЧНО (UX fix): раньше "канал не подключён" повторялся трижды на
@@ -1806,6 +1831,12 @@ async function renderChannel(){
   // дашборде (app.part03.js) строка остаётся: там блока очереди нет и это
   // единственный способ увидеть, когда появится следующий пост.
   const subLine = c.enabled === false ? "На паузе" : "";
+  // Тему канала здесь не показываем. Замерено на 390px: абзац с темой занимал
+  // 62px из 250px шапки и отодвигал первый пост на 612px из 844 -- при том, что
+  // он только для чтения, повторяет поле «Тема» во вкладке «Настройки» и не
+  // меняется между заходами. На этот экран приходят решать судьбу постов; чтобы
+  // решить, нужен текст поста, а не описание канала. Тема осталась там, где её
+  // можно исправить, -- в «Настройках».
 
   $("app").innerHTML=topbar("dashboard","все каналы")+`<div class="wrap">
     ${notConnected}
@@ -1814,13 +1845,12 @@ async function renderChannel(){
         <div class="tg-ava" style="width:52px;height:52px;font-size:22px">${esc(initial)}</div>
         <div style="min-width:0">
           <h2 style="font-family:'Instrument Serif',serif;font-size:26px;font-weight:400">${esc(c.title)}</h2>
-          <div class="chan-handle">${c.tg_chat?esc(c.tg_chat):'<span style="color:var(--text-faint);font-style:italic;font-weight:400">канал будет указан после подключения</span>'}</div>
+          ${c.tg_chat?`<div class="chan-handle">${esc(c.tg_chat)}</div>`:""}
         </div>
       </div>
       ${statusLabel?`<div class="status-line"><span class="status-dot ${dotClass}"></span>${statusLabel}</div>`:""}
       ${subLine?`<div class="status-subline">${subLine}</div>`:""}
-      ${c.about?`<p style="font-size:13px;color:var(--text-dim);margin-top:10px;max-width:500px">${esc(c.about)}</p>`:""}
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
         <button class="btn btn-sm" onclick="openGenPanel()">✦ Создать пост</button>
         <button class="${c.enabled?'btn-outline btn-sm':'btn btn-sm'}" onclick="toggleChannelEnabled()"
           id="pause_btn">${c.enabled?'⏸ Пауза':'▶ Возобновить'}</button>
@@ -1943,7 +1973,7 @@ function renderPostCard(p, pubMs, channelEnabled){
 
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────
   const channelConnected = App._chan && App._chan.tg_chat && App._chan.verified;
-  const publishDisabledAttr = channelConnected ? "" : `disabled title="Сначала подключите Telegram-канал"`;
+  const publishDisabledAttr = channelConnected ? "" : `disabled title="Сначала подключите Телеграм-канал"`;
   let primaryBtn="", secondaryBtn="", menuItems="";
   if(isFailed){
     primaryBtn=`<button class="btn btn-sm" onclick="toggleEdit(${p.id})" id="edit_${p.id}">Исправить</button>`;
@@ -1965,7 +1995,7 @@ function renderPostCard(p, pubMs, channelEnabled){
   } else if(p.status==="published"){
     const chatLabel=(App._chan?.tg_chat||"").replace(/^https?:\/\/t\.me\//i,"").replace(/^@/,"");
     const tgUrl=p.tg_message_id&&chatLabel?`https://t.me/${chatLabel}/${p.tg_message_id}`:`https://t.me/${chatLabel}`;
-    primaryBtn=`<button class="btn-outline btn-sm" onclick="window.open('${tgUrl}','_blank')">Открыть в Telegram</button>`;
+    primaryBtn=`<button class="btn-outline btn-sm" onclick="window.open('${tgUrl}','_blank')">Открыть в Телеграм</button>`;
     secondaryBtn=`<button class="btn-ghost btn-sm" onclick="regenPost(${p.id})">Создать похожий</button>`;
     menuItems=`<button class="menu-item menu-item-danger" onclick="closePostMenu(${p.id});deletePost(${p.id})">Удалить из списка</button>`;
   } else {
@@ -1973,7 +2003,12 @@ function renderPostCard(p, pubMs, channelEnabled){
   }
   const menuBtn = menuItems ? `
     <div style="position:relative;margin-left:auto">
-      <button class="btn-ghost btn-sm" onclick="togglePostMenu(${p.id})" style="padding:6px 10px">⋯</button>
+      <!-- Замерено на 390px: цель была 32×27 — самая мелкая на экране, и стоит
+           вплотную к «Опубликовать сейчас», то есть к необратимому действию.
+           Промах пальцем здесь стоит поста, ушедшего в канал. У кнопки нет ни
+           фона, ни рамки, поэтому увеличенные отступы расширяют область
+           нажатия, ничего не меняя внешне. -->
+      <button class="btn-ghost btn-sm" onclick="togglePostMenu(${p.id})" style="padding:14px 16px;line-height:1">⋯</button>
       <div id="pmenu_${p.id}" class="post-menu hidden">${menuItems}</div>
     </div>` : "";
 
@@ -2125,7 +2160,7 @@ function renderQueueBody(){
   const paused = c.enabled === false;
   const queueStatus = _renderQueueStatus(c, pending.length, {minQueue, connected, paused});
 
-  const viewToggle=`<div style="display:flex;gap:8px;margin-bottom:14px">
+  const viewToggle=`<div style="display:flex;gap:8px;margin-bottom:4px">
     <button class="btn-sm ${_queueViewMode==="list"?"btn":"btn-outline"}" onclick="setQueueViewMode('list')">📋 Список</button>
     <button class="btn-sm ${_queueViewMode==="calendar"?"btn":"btn-outline"}" onclick="setQueueViewMode('calendar')">🗓 Календарь</button>
   </div>`;
@@ -2222,7 +2257,15 @@ function _scheduleApprovalRefresh(pending){
 // готовым постом. Формулировки — с явными подлежащими, без канцелярита.
 function _renderQueueStatus(c, pendingCount, opts){
   const {minQueue, connected, paused} = opts;
-  const counter = `<b>${pendingCount}</b> из ${minQueue}`;
+  // «N из M» осмысленно, пока очередь наполняется: M -- сколько постов мы
+  // держим наготове. Но плановая генерация глубину очереди не проверяет
+  // (tick -> generate_for_channel в tasks.py, гейт `pending_count < target`
+  // стоит только в _refill_if_active), поэтому постов легко становится больше
+  // цели -- и счётчик показывал «4 из 3». Когда запас набран, знаменатель
+  // больше ничего не объясняет: показываем просто число.
+  const counter = pendingCount >= minQueue
+    ? `<b>${pendingCount}</b>`
+    : `<b>${pendingCount}</b> из ${minQueue}`;
   const settingsLink = `onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)"`;
 
   if(paused){
@@ -2277,9 +2320,29 @@ function _renderQueueStatus(c, pendingCount, opts){
 
   // Режим "ничего не выходит без решения пользователя".
   const softControlMin = App.cfg?.soft_control_minutes || 30;
+  // Здесь было «Очередь заполнена. Как только опубликуете один пост, мы
+  // подготовим следующий» -- и это неправда. Проверено прямым вызовом решающих
+  // функций: канал с полной очередью и истёкшим интервалом попадает в
+  // `due_ids` в tick() и получает новый пост, публикации никто не ждёт.
+  // Обещание держало паузу, которой в системе нет.
+  // Интервал здесь намеренно не называем -- он написан в «Подробнее», и
+  // повторять его на виду значило бы вернуть тот самый повтор, который убрали
+  // в B6.
   const refillLine = pendingCount < minQueue
     ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
-    : `Очередь заполнена. Как только опубликуете один пост, мы подготовим следующий.`;
+    : `Запас готов — дальше посты добавляются по расписанию.`;
+
+  // Механику «кнопка или таймер» показываем только когда постов ещё нет.
+  // Как только пост появился, его карточка говорит это про себя сама -- либо
+  // «сам не опубликуется», либо обратный отсчёт, -- и объяснение на уровне
+  // экрана становится третьим пересказом одной мысли.
+  // Замерено на 390x844 до правки: первый пост начинался на 612px, то есть
+  // три четверти первого экрана уходили на шапку и объяснение, и на телефоне
+  // с адресной строкой пост оказывался за сгибом. Полный текст никуда не
+  // делся -- он под «Подробнее».
+  const mechanicsLine = pendingCount > 0 ? "" : ((App.user?.tg_chat_id
+    ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Телеграм."
+    : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки.") + " ");
 
   // КРИТИЧНО: здесь было «Ни один пост не попадёт в канал, пока вы не нажмёте
   // „Опубликовать“» -- и это неправда для основного сценария. Пост, который мы
@@ -2293,21 +2356,19 @@ function _renderQueueStatus(c, pendingCount, opts){
   return `<div class="card" style="background:var(--accent-soft);border:none;margin-bottom:14px;padding:14px 16px">
     <div style="font-size:13px;color:var(--accent-dark);font-weight:600">В очереди ${counter}</div>
     <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
-      ${App.user?.tg_chat_id
-        ? "Пост ждёт вашей кнопки «Опубликовать» — или таймера на карточке, если мы прислали его вам в Telegram."
-        : "Мы ничего не публикуем сами, пока не можем вас предупредить: каждый пост ждёт вашей кнопки."} ${refillLine}
+      ${mechanicsLine}${refillLine}
     </div>
-    <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)"
+    <button class="btn-ghost btn-sm" style="margin-top:0;padding:4px 0;color:var(--accent-dark)"
       onclick="toggleQueueHelp()" id="queue_help_btn">Подробнее ▾</button>
     <div id="queue_help" class="hidden" style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--border-soft);padding-top:8px">
       Новые посты мы пишем сами — ${_intervalLabel(c.interval_hours||12)}, плюс держим в запасе ${minQueue}.<br>
       ${App.user?.tg_chat_id
-        ? `Пост по расписанию мы присылаем вам в Telegram, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
+        ? `Пост по расписанию мы присылаем вам в Телеграм, и у него есть обратный отсчёт: не отреагируете за ${softControlMin} мин — опубликуем сами. Такой пост видно по таймеру на карточке.<br>
       Пост, который вы создали вручную, ждёт вашего решения сколько угодно — сам он не опубликуется.<br>`
         : `Пока уведомления не подключены, обратный отсчёт не запускается: предупредить вас нам нечем, поэтому ни один пост не уходит в канал сам. Каждый ждёт вашей кнопки сколько угодно.<br>`}
       ${App.user?.tg_chat_id
-        ? `Мы дублируем такие посты вам в Telegram — можно решать с телефона, не заходя на сайт.`
-        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Telegram</a>, чтобы решать с телефона, не заходя на сайт.`}
+        ? `Мы дублируем такие посты вам в Телеграм — можно решать с телефона, не заходя на сайт.`
+        : `<a href="#" onclick="setTab('settings');return false">Подключите уведомления в Телеграм</a>, чтобы решать с телефона, не заходя на сайт.`}
       <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--accent-dark)" ${settingsLink}>Открыть настройки</button>
     </div>
   </div>`;
@@ -2457,13 +2518,19 @@ function renderSettings(){
   const lens=["50-100 слов","100-200 слов","200-350 слов"];
   $("tabbody").innerHTML=`
     <div class="card">
-      <div class="card-title">Telegram</div>
+      <div class="card-title">Телеграм</div>
       <label class="field"><span class="field-label">Название</span>
         <input id="f_title" value="${esc(c.title)}"></label>
+      <!-- Подтверждение показывает только «✓ Проверено», без подписи канала.
+           Замер на 390px: строка «✓ Проверено · @канал» не помещалась в 214px
+           и обрезалась многоточием -- то есть вторая копия хэндла была ещё и
+           нечитаемой, а первая, целая, стоит в шапке на 365px выше, на том же
+           экране. Сам хэндл никуда не делся: «Изменить» открывает поле, где он
+           лежит целиком и правится. -->
       <label class="field mt"><span class="field-label">@username, ссылка t.me/ или ID</span>
         ${c.verified
           ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--green-bg);border-radius:10px;margin-bottom:6px;flex-wrap:nowrap;overflow:hidden">
-               <span style="color:var(--green);font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✓ Проверено · ${esc(c.tg_chat)}</span>
+               <span style="color:var(--green);font-weight:600;font-size:13px">✓ Проверено</span>
                <button class="btn-ghost btn-sm" onclick="showVerifyInput()" style="flex-shrink:0;font-size:12px">Изменить</button>
              </div>
              <div id="verifyInputBlock" class="hidden">
@@ -2507,7 +2574,7 @@ function renderSettings(){
     <div class="card" id="settings_automation_card">
       <div class="card-title">Автоматизация</div>
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Telegram: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
         <label class="switch"><input type="checkbox" id="sw_auto" ${c.auto_publish?"checked":""}><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
@@ -2516,13 +2583,13 @@ function renderSettings(){
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Уведомления в Telegram</div>
+      <div class="card-title">Уведомления в Телеграм</div>
       <div style="margin-bottom:14px" id="tg_notif_block">
         ${App.user?.tg_chat_id
           ? '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--green-bg);border-radius:10px;font-size:14px;color:var(--green)">✅ Подключено — уведомления активны</div>'
           : '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;line-height:1.6">Нажмите кнопку — бот пришлёт приветствие и начнёт отправлять уведомления.</div>'
             + '<button class="btn" onclick="openTgConnect()" style="display:inline-flex;margin-bottom:4px">💬 Подключить уведомления →</button>'
-            + '<div class="hint" style="margin-top:8px">Откроется бот — нажми Start</div>'
+            + '<div class="hint" style="margin-top:8px">Откроется бот — нажмите Start</div>'
         }
       </div>
       <div class="toggle-row">
@@ -2535,9 +2602,13 @@ function renderSettings(){
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Протестировать</div>
-      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Сгенерировать тестовый пост с текущими настройками.</p>
-      <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Создать тестовый пост</button>
+      <div class="card-title">Проверить настройки</div>
+      <!-- Слово «тестовый» обещало пробный прогон без последствий, а кнопка
+           дёргает тот же /generate, что и «Написать пост сейчас» в очереди:
+           пост настоящий, тратит токены и остаётся в очереди. Называем вещи
+           одинаково в обоих местах и сразу говорим про расход. -->
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Напишем пост прямо сейчас — посмотрите, что получается с текущими настройками. Пост обычный: тратит токены и встаёт в очередь, сам не опубликуется.</p>
+      <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Написать пост сейчас</button>
       <div id="test_result" style="margin-top:12px"></div>
     </div>
     <div class="row between mt-lg">
@@ -2623,20 +2694,20 @@ async function renderAdvanced(){
           background:${(c.channel_type||'thematic')==='thematic'?'var(--accent-soft)':''};
           border-radius:12px;padding:12px;cursor:pointer">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">✍️ Тематический</div>
-          <div style="font-size:11px;color:var(--text-dim)">Публикует по расписанию</div>
+          <div style="font-size:11px;color:var(--text-dim)">Пишем по расписанию</div>
         </div>
         <div onclick="pickChannelType('news')" id="adv_type_news"
           style="border:2px solid ${(c.channel_type||'thematic')==='news'?'var(--accent)':'var(--border-soft)'};
           background:${(c.channel_type||'thematic')==='news'?'var(--accent-soft)':''};
           border-radius:12px;padding:12px;cursor:pointer">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">📡 Новостной</div>
-          <div style="font-size:11px;color:var(--text-dim)">Только при наличии новостей</div>
+          <div style="font-size:11px;color:var(--text-dim)">Пишем, только если есть новость</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title" id="adv_sched_title">${(c.channel_type||'thematic')==='news'?'Проверять новости каждые':'Расписание'}</div>
+      <div class="card-title" id="adv_sched_title">${(c.channel_type||'thematic')==='news'?'Как часто проверять новости':'Как часто писать новый пост'}</div>
       <div style="margin-bottom:12px">
         <div class="field-label" style="margin-bottom:8px">Интервал</div>
         <div class="seg" id="seg_int" style="flex-wrap:wrap">
@@ -2651,17 +2722,19 @@ async function renderAdvanced(){
         <input type="range" id="f_jitter" min="0" max="120" value="${c.interval_jitter_minutes||0}"
           oninput="$('jlbl').textContent=this.value"
           style="padding:4px 0;height:auto;box-shadow:none;border:none;background:none">
-        <div class="hint">Добавляет случайное отклонение — посты выходят в разное время, выглядит естественнее.</div>
+        <div class="hint">Сдвигает время написания на случайную величину, чтобы посты появлялись не по секундомеру.</div>
       </label>
       <div style="margin-top:14px">
-        <div class="field-label" style="margin-bottom:8px">Окно публикации (UTC)</div>
+        <div class="field-label" style="margin-bottom:8px">Когда писать посты (UTC)</div>
         <div class="row" style="gap:10px">
           <div style="flex:1"><div style="font-size:11px;color:var(--text-faint);margin-bottom:4px">С</div>
             <input id="f_ws" placeholder="09:00" value="${c.publish_window_start||""}"></div>
           <div style="flex:1"><div style="font-size:11px;color:var(--text-faint);margin-bottom:4px">До</div>
             <input id="f_we" placeholder="22:00" value="${c.publish_window_end||""}"></div>
         </div>
-        <div class="hint">Посты публикуются только в это время. Москва = UTC+3.</div>
+        <div class="hint">${c.auto_publish
+          ? "Пишем и публикуем посты только в это время. Москва = UTC+3."
+          : "Новые посты пишем только в это время. Когда они выйдут в канал — решаете вы. Москва = UTC+3."}</div>
       </div>
     </div>
 
@@ -2954,7 +3027,7 @@ async function renderBilling(){
     </div>
     <div class="card" style="margin-bottom:16px">
       <button onclick="togglePayHistory()" id="pay_hist_btn"
-        style="background:none;border:none;cursor:pointer;font-size:14px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;width:100%;padding:0 0 12px">
+        style="background:none;border:none;cursor:pointer;font-size:14px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;width:100%;padding:0;min-height:44px">
         📋 История платежей <span id="pay_hist_arrow" style="font-size:12px;color:var(--text-faint)">▶</span>
       </button>
       <div id="payList" class="hidden text-faint"></div>
@@ -2970,7 +3043,7 @@ async function renderBilling(){
         <button class="btn-outline btn-sm" onclick="navigator.clipboard.writeText('${esc(code)}').then(()=>toast('Скопировано','ok'))">Копировать</button>
       </div>
       <div style="font-size:13px;color:var(--text-dim);background:var(--surface2);border-radius:10px;padding:12px 14px;line-height:1.7">
-        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">@maintrpost_bot</a><br>
+        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent);display:inline-block;padding:14px 0">@maintrpost_bot</a><br>
         2. «Открыть АвтоПост» → Зарегистрироваться<br>
         3. Введите реферальный код: <b>${esc(code)}</b>
       </div>
@@ -2989,11 +3062,24 @@ async function renderBilling(){
           }
         }
       });
+      // В истории платежей не было главного — суммы. Строка выглядела как
+      // «27.07.2026, 14:05 · 600 000 ток.»: внутренняя единица учёта на первом
+      // месте и ни рубля. Человек заходит сюда посмотреть, сколько и за что
+      // заплатил, поэтому деньги вынесены вперёд, а токены остались справочно.
+      // Прежний класс .src-url не подошёл: у него white-space:nowrap, и вторая
+      // строка в него не помещалась.
       $("payList").innerHTML=ps.length
-        ?ps.map(p=>`<div class="src-row">
-            <span class="src-url">${new Date(p.created_at+"Z").toLocaleString("ru-RU")} · ${fmt(p.tokens)} ток.</span>
-            <span class="chip ${p.status==="paid"?"chip-green":"chip-orange"}">${p.status==="paid"?"оплачено":"ожидает"}</span>
-          </div>`).join("")
+        ?ps.map(p=>{
+            const pkg=(App.cfg?.packages||[]).find(x=>x.id===p.package_id);
+            const when=new Date(p.created_at+"Z").toLocaleString("ru-RU");
+            return `<div class="src-row" style="align-items:flex-start">
+              <div style="min-width:0">
+                <div style="font-size:13px;color:var(--text);font-weight:600">${_rub(p.rub||0)}\u00A0₽${pkg?` · ${esc(pkg.title)}`:""}</div>
+                <div style="font-size:12px;color:var(--text-faint);margin-top:2px">${when} · ${fmt(p.tokens)} токенов</div>
+              </div>
+              <span class="chip ${p.status==="paid"?"chip-green":"chip-orange"}">${p.status==="paid"?"оплачено":"ожидает оплаты"}</span>
+            </div>`;
+          }).join("")
         :`<p style="font-size:13px;color:var(--text-faint)">Платежей пока не было.</p>`;
     }catch(_){}
   };
@@ -3225,7 +3311,7 @@ async function savePost(id){
   catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
 }
 // КРИТИЧНО (UX fix): "Опубликовать сейчас" раньше публиковало мгновенно и
-// безвозвратно в реальный Telegram-канал -- ни одной секунды на передумать,
+// безвозвратно в реальный Телеграм-канал -- ни одной секунды на передумать,
 // даже для только что созданного поста, который никто ещё не смотрел
 // (например сразу после подключения канала). Тот же принцип "минута на
 // отмену", что уже есть в режиме "публикация после подтверждения" (см.
@@ -3252,12 +3338,12 @@ async function publishPost(id){
     return;
   }
 
-  // P0 fix (third issue): если канал не подключён к Telegram, не пытаемся
+  // P0 fix (third issue): если канал не подключён к Телеграм, не пытаемся
   // публиковать вообще — показываем понятное сообщение вместо того чтобы
   // дать запросу дойти до Telegram API и упасть с технической ошибкой.
   const chan = App._chan;
   if (chan && (!chan.tg_chat || !chan.verified)) {
-    toast("Сначала подключите Telegram-канал, потом можно будет опубликовать пост.", "err");
+    toast("Сначала подключите Телеграм-канал, потом можно будет опубликовать пост.", "err");
     return;
   }
 
@@ -3370,15 +3456,15 @@ function pickChannelType(type){
   if(ta) ta.style.background=type==="thematic"?"var(--accent-soft)":"";
   if(tn) tn.style.border=type==="news"?"2px solid var(--accent)":"2px solid var(--border-soft)";
   if(tn) tn.style.background=type==="news"?"var(--accent-soft)":"";
-  if(tl) tl.textContent=type==="news"?"Проверять новости каждые":"Расписание";
+  if(tl) tl.textContent=type==="news"?"Как часто проверять новости":"Как часто писать новый пост";
 }
 
 function initCookieBanner(){
   if(localStorage.getItem("cookie_ok")) return;
   const b=document.createElement("div");
-  b.style.cssText="position:fixed;bottom:0;left:0;right:0;background:#171b20;color:#e4e8ec;font-size:13px;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;z-index:9999;";
-  b.innerHTML=`<span>Мы используем cookies. <a href="/legal/privacy" target="_blank" style="color:#d8b15e">Подробнее</a></span>
-    <button style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
+  b.style.cssText="position:fixed;bottom:0;left:0;right:0;background:#171b20;color:#e4e8ec;font-size:13px;padding:4px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;z-index:9999;";
+  b.innerHTML=`<span>Мы используем cookies. <a href="/legal/privacy" target="_blank" style="color:#d8b15e;display:inline-block;padding:14px 0">Подробнее</a></span>
+    <button style="background:#d8b15e;color:#1a1404;border:none;border-radius:6px;padding:6px 14px;min-height:44px;cursor:pointer;font-size:13px;font-weight:500">Понятно</button>`;
   document.body.appendChild(b);
 
   // Плашка прижата к низу и лежит ПОВЕРХ страницы, а запаса снизу у body не
@@ -3389,6 +3475,10 @@ function initCookieBanner(){
   // сама плашка при этом предлагает прочитать «Подробнее».
   // Отступ считаем по фактической высоте: на узком экране текст переносится,
   // и плашка становится выше.
+  // Внешний отступ плашки уменьшен с 12px до 4px: «Понятно» и «Подробнее»
+  // выросли до 44px по высоте (было 28 и 16), и свой воздух теперь несут
+  // они сами -- иначе плашка стала бы на 16px выше и опять полезла бы на
+  // юридические ссылки, которые сама же предлагает прочитать.
   const pad=()=>{ document.body.style.paddingBottom=b.offsetHeight+"px"; };
   pad();
   window.addEventListener("resize",pad);
