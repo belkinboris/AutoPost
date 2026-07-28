@@ -2117,6 +2117,21 @@ async function renderQueue(){
   try{posts=await api("GET","/channels/"+App._chan.id+"/posts");}catch(e){}
   App._queuePosts=posts; // календарь и переключение вида работают без повторного запроса
 
+  // Прогноз автопубликаций для календаря -- только у автопилота: без него
+  // решение всегда за пользователем, и показывать даты было бы обещанием
+  // того, чего система не делает. Запрашиваем один раз при заходе на вкладку,
+  // а не при каждой перерисовке -- renderQueueBody() вызывается часто (после
+  // публикации, отклонения и т.д.), лишний запрос на каждый клик не нужен.
+  // Смена частоты подхватится при следующем заходе на «Очередь» -- тем же
+  // способом, каким уже обновляется сам App._chan.
+  App._schedulePreview=[];
+  if(App._chan.auto_publish){
+    try{
+      const r=await api("GET","/channels/"+App._chan.id+"/schedule_preview");
+      App._schedulePreview=r.slots||[];
+    }catch(e){}
+  }
+
   $("tabbody").innerHTML=`<div id="postList"></div>`;
   renderQueueBody();
 }
@@ -2168,7 +2183,7 @@ function renderQueueBody(){
   let html=queueStatus+viewToggle;
 
   if(_queueViewMode==="calendar"){
-    html+=renderQueueCalendar(posts);
+    html+=renderQueueCalendar(posts, App._schedulePreview||[]);
     $("postList").innerHTML=html;
     return;
   }
@@ -2450,7 +2465,7 @@ function selectCalDate(key){
   renderQueueBody();
 }
 
-function renderQueueCalendar(posts){
+function renderQueueCalendar(posts, forecastSlots){
   const monthDate=_calMonth||new Date();
   const year=monthDate.getFullYear(), month=monthDate.getMonth();
 
@@ -2464,6 +2479,12 @@ function renderQueueCalendar(posts){
     (byDate[key]=byDate[key]||[]).push({...p, _calKind:kind, _calTime:d});
   });
 
+  // Прогноз -- не настоящие посты, у них нет карточки и нечего открывать по
+  // клику. Считаем отдельно от byDate, чтобы не путать с реальными постами:
+  // публикация всё ещё честно происходит по расписанию в момент тика, а не
+  // потому что дата была нарисована в календаре заранее.
+  const forecastDates=new Set((forecastSlots||[]).map(iso=>_dateKey(new Date(iso))));
+
   const firstOfMonth=new Date(year,month,1);
   const daysInMonth=new Date(year,month+1,0).getDate();
   // Понедельник = 0 (российская неделя)
@@ -2475,14 +2496,16 @@ function renderQueueCalendar(posts){
   for(let day=1;day<=daysInMonth;day++){
     const key=`${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
     const items=(byDate[key]||[]).sort((a,b)=>a._calTime-b._calTime);
+    const hasForecast=forecastDates.has(key);
     const isToday=key===todayKey;
     const isSelected=key===_calSelectedDate;
-    const dots=items.slice(0,3).map(it=>`<span class="cal-dot cal-dot-${it._calKind}"></span>`).join("");
+    const dots=items.slice(0,3).map(it=>`<span class="cal-dot cal-dot-${it._calKind}"></span>`).join("")
+      +(hasForecast?`<span class="cal-dot cal-dot-forecast"></span>`:"");
     const more=items.length>3?`<span class="cal-more">+${items.length-3}</span>`:"";
     cells+=`<div class="cal-cell${isToday?" cal-cell-today":""}${isSelected?" cal-cell-selected":""}${items.length?" cal-cell-has":""}"
       ${items.length?`onclick="selectCalDate('${key}')"`:""}>
       <div class="cal-daynum">${day}</div>
-      ${items.length?`<div class="cal-dots">${dots}${more}</div>`:""}
+      ${items.length||hasForecast?`<div class="cal-dots">${dots}${more}</div>`:""}
     </div>`;
   }
 
@@ -2507,7 +2530,7 @@ function renderQueueCalendar(posts){
     <button class="btn-ghost btn-sm" onclick="changeCalMonth(1)">›</button>
   </div>
   <div class="cal-grid">${weekHead}${cells}</div>
-  <div class="cal-legend"><span><span class="cal-dot cal-dot-published"></span> Опубликован</span><span><span class="cal-dot cal-dot-scheduled"></span> Запланирован</span></div>
+  <div class="cal-legend"><span><span class="cal-dot cal-dot-published"></span> Опубликован</span><span><span class="cal-dot cal-dot-scheduled"></span> Запланирован</span>${forecastSlots&&forecastSlots.length?`<span><span class="cal-dot cal-dot-forecast"></span> Ожидается по расписанию</span>`:""}</div>
   ${selectedBlock}`;
 }
 

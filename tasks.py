@@ -885,6 +885,79 @@ def _is_due(channel: Channel, now: datetime) -> bool:
     return False
 
 
+def project_upcoming_slots(channel: Channel, now: datetime, count: int = 30) -> list:
+    """Прогноз следующих `count` моментов автопубликации по ТЕКУЩИМ настройкам
+    расписания -- для календаря в кабинете (владелец 28.07 попросил, чтобы
+    смена частоты сразу отражалась в календаре, а не только в момент, когда
+    пост реально опубликован).
+
+    Намеренно не вызывать для канала без автопилота: там нет обязательства
+    "выйдет само" вообще, показывать прогноз публикации значило бы обещать
+    то, чего система не делает (принцип 5) -- эту проверку оставляем на
+    вызывающей стороне (main.py), а не здесь, чтобы функция при этом
+    оставалась чистой математикой расписания и её было проще тестировать.
+
+    Без jitter: `_next_publish_time` в реальной генерации применяет
+    случайный сдвиг, чтобы посты не выходили "по секундомеру", но для
+    прогноза это дало бы дни, прыгающие между обновлениями страницы без
+    всякой пользы -- берём середину интервала.
+    """
+    slots = []
+    if channel.schedule_kind == "daily":
+        try:
+            times = sorted(json.loads(channel.daily_times or "[]"))
+        except Exception:
+            times = []
+        if not times:
+            return []
+        cursor = now
+        # Не больше 400 дней вперёд, даже если count большой -- защита от
+        # зацикливания при пустом/испорченном daily_times.
+        for _ in range(400):
+            if len(slots) >= count:
+                break
+            for hhmm in times:
+                try:
+                    hh, mm = map(int, hhmm.split(":"))
+                except Exception:
+                    continue
+                candidate = cursor.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if candidate > now:
+                    slots.append(candidate)
+                if len(slots) >= count:
+                    break
+            cursor = cursor + timedelta(days=1)
+        return slots[:count]
+
+    if channel.schedule_kind == "interval":
+        base_seconds = max(60, channel.interval_hours * 3600)
+        ws, we = channel.publish_window_start, channel.publish_window_end
+        cursor = channel.last_generated_at or now
+        for _ in range(count * 3):  # запас на случаи, которые окно сдвигает вперёд
+            if len(slots) >= count:
+                break
+            cursor = cursor + timedelta(seconds=base_seconds)
+            slot = cursor
+            if ws and we:
+                try:
+                    wsh, wsm = map(int, ws.split(":"))
+                    weh, wem = map(int, we.split(":"))
+                    window_start = slot.replace(hour=wsh, minute=wsm, second=0, microsecond=0)
+                    window_end = slot.replace(hour=weh, minute=wem, second=0, microsecond=0)
+                    if slot < window_start:
+                        slot = window_start
+                    elif slot > window_end:
+                        slot = (slot + timedelta(days=1)).replace(hour=wsh, minute=wsm, second=0)
+                except Exception:
+                    pass
+            if slot > now:
+                slots.append(slot)
+                cursor = slot
+        return slots[:count]
+
+    return []
+
+
 _last_update_id = 0
 _last_main_bot_update_id = 0
 

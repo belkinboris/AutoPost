@@ -1047,6 +1047,30 @@ def list_posts(channel_id: int, user: User = Depends(current_user)):
         return out
 
 
+@app.get("/api/channels/{channel_id}/schedule_preview")
+def schedule_preview(channel_id: int, user: User = Depends(current_user)):
+    """
+    Прогноз ближайших автопубликаций для календаря в кабинете (см. C12 в
+    PRODUCT_ROADMAP.md, запрос владельца 28.07: смена частоты должна сразу
+    отражаться в календаре).
+
+    Отдаём только для канала с включённым автопилотом. Без него у постов нет
+    даты, когда они выйдут сами -- решение всегда за пользователем, и любой
+    прогноз здесь читался бы как обещание автопубликации, которого система
+    не выполняет (принцип 5 в CLAUDE.md).
+    """
+    with session() as s:
+        ch = _own_channel(s, channel_id, user)
+        # Те же условия, что и у настоящего tick() (tasks.py: due_ids
+        # собираются по `c.verified and _is_due(...)`) -- без подтверждённого
+        # бота автопилот не публикует ничего и никогда, и прогноз дат,
+        # которые не наступят, был бы обманом, а не прогнозом.
+        if not ch.auto_publish or not ch.verified or not ch.enabled:
+            return {"slots": []}
+        slots = tasks.project_upcoming_slots(ch, datetime.utcnow(), count=30)
+        return {"slots": [s.isoformat() + "Z" for s in slots]}
+
+
 @app.patch("/api/posts/{post_id}")
 def edit_post(post_id: int, data: PostPatch, user: User = Depends(current_user)):
     with session() as s:
