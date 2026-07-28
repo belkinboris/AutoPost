@@ -1,7 +1,8 @@
 """
-Тест на резерв очереди (`tasks._refill_if_active`) и автопилот.
+Тесты на то, что очередь не растёт бесконечно: ни резерв (`_refill_if_active`),
+ни плановая генерация по расписанию (`_generate_if_due`).
 
-Найдено вживую 28.07: у канала с включённым автопилотом в очереди навсегда
+Первая находка (28.07): у канала с включённым автопилотом в очереди навсегда
 зависли три поста «Ждёт вашего решения», созданные в одну минуту. Автопилот
 их не публикует — плановая генерация делает свой пост и публикует его
 напрямую (`generate_for_channel`, ветка `channel.auto_publish and not
@@ -10,12 +11,18 @@ force_pending`), минуя очередь вовсе. А резерв (`MIN_QUE
 где решение принимать некому и не с чего: подтверждать эти посты в
 автопилоте никто не должен.
 
-Итог был такой: реальные токены тратились на посты, которые не публикует
-ни автопилот (у него свой пост), ни пользователь (для автопилота в
-интерфейсе нет экрана подтверждения) — они просто лежали мёртвым грузом.
+Вторая находка, решение владельца в том же разговоре (C8): плановая
+генерация для канала БЕЗ автопилота прежде не смотрела, сколько постов уже
+ждут решения — только на прошедшее время. Пользователь, не заходивший
+неделю, получал не «очередь на неделю» (обещание онбординга — 7 постов
+оплатившему, 3 бесплатному, см. `queue_target_for_user`), а сколько угодно
+постов — по числу сработавших тиков расписания. Теперь `_generate_if_due`
+останавливается на той же целевой глубине, что и резерв.
 
-Резерв нужен только режиму «подтверждение вручную», и только там должен
-пополняться.
+Резерв (первая находка) нужен только режиму «подтверждение вручную» и
+пополняется только там. Потолок плановой генерации (вторая находка) общий
+для обоих режимов: он же защищает автопилот на случай, если Telegram
+перестал принимать сообщения и посты застревают в pending.
 """
 
 import pytest
@@ -75,3 +82,74 @@ async def test_manual_channel_stops_once_target_reached(fake_generate):
 
     await tasks._refill_if_active(cid)
     assert fake_generate == [], "резерв продолжает пополняться при уже полной очереди"
+
+
+# ── C8: плановая генерация не должна расти бесконечно ──────────────────────
+
+async def test_scheduled_generation_stops_at_target_depth(fake_generate):
+    """Ручной режим, очередь уже полна (3 неразобранных поста) -- новую
+    плановую генерацию не запускаем, сколько бы тиков расписания ни сработало."""
+    cid = _make_channel("cap@example.com", auto_publish=False)
+    with database.session() as s:
+        ch = s.get(Channel, cid)
+        for i in range(3):
+            s.add(Post(channel_id=cid, user_id=ch.user_id, text=f"старый {i}", status="pending"))
+        s.commit()
+
+    await tasks._generate_if_due(cid)
+    assert fake_generate == [], "плановая генерация не остановилась на целевой глубине"
+
+
+async def test_scheduled_generation_resumes_when_slot_frees_up(fake_generate):
+    """Как только один пост решён (снят из очереди), генерация возобновляется."""
+    cid = _make_channel("resume@example.com", auto_publish=False)
+    with database.session() as s:
+        ch = s.get(Channel, cid)
+        for i in range(2):
+            s.add(Post(channel_id=cid, user_id=ch.user_id, text=f"старый {i}", status="pending"))
+        s.commit()
+
+    await tasks._generate_if_due(cid)
+    assert fake_generate == [{"channel_id": cid, "force_pending": False}]
+
+
+async def test_paid_user_cap_is_seven_not_three(fake_generate):
+    """Оплатившему полагается «очередь на неделю» (7), а не бесплатные 3 --
+    это тот же queue_target_for_user, что и у резерва, потолок общий."""
+    from database import Payment
+
+    cid = _make_channel("paid@example.com", auto_publish=False)
+    with database.session() as s:
+        ch = s.get(Channel, cid)
+        s.add(Payment(user_id=ch.user_id, package_id="p1", label="test",
+                      rub=490, tokens=600_000, status="paid"))
+        for i in range(5):
+            s.add(Post(channel_id=cid, user_id=ch.user_id, text=f"пост {i}", status="pending"))
+        s.commit()
+
+    # 5 из 7 -- ещё есть место, генерация должна сработать
+    await tasks._generate_if_due(cid)
+    assert fake_generate == [{"channel_id": cid, "force_pending": False}]
+
+
+async def test_healthy_autopilot_is_not_blocked(fake_generate):
+    """Автопилот без сбоев публикует сразу, в очереди пусто -- потолок не
+    должен мешать плановой генерации в штатном режиме."""
+    cid = _make_channel("healthy_auto@example.com", auto_publish=True)
+    await tasks._generate_if_due(cid)
+    assert fake_generate == [{"channel_id": cid, "force_pending": False}]
+
+
+async def test_autopilot_with_stuck_pending_is_also_capped(fake_generate):
+    """Если у автопилота Telegram перестал принимать сообщения, посты
+    остаются pending (см. generate_for_channel) -- потолок защищает и этот
+    канал от бесконечных попыток, хотя формально это не «резерв»."""
+    cid = _make_channel("broken_auto@example.com", auto_publish=True)
+    with database.session() as s:
+        ch = s.get(Channel, cid)
+        for i in range(3):
+            s.add(Post(channel_id=cid, user_id=ch.user_id, text=f"не ушёл {i}", status="pending"))
+        s.commit()
+
+    await tasks._generate_if_due(cid)
+    assert fake_generate == [], "автопилот с зависшими постами продолжает генерировать без ограничений"

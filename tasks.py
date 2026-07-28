@@ -1143,6 +1143,48 @@ async def _ensure_queue(published_post_id: int):
     await _refill_if_active(channel_id)
 
 
+async def _generate_if_due(channel_id: int):
+    """Плановая генерация по расписанию (`tick`) -- но только если очередь
+    ещё не набрала целевую глубину.
+
+    Владелец 28.07 явно решил: генерация не должна расти бесконечно, если
+    пользователь не заходит и не разбирает очередь. До этой проверки
+    `_is_due` смотрел только на прошедшее время, а сколько постов уже висит
+    нерешённых -- не проверял вовсе. За неделю без единого решения канал с
+    интервалом раз в сутки получал не 7 постов (обещанная онбордингом
+    «очередь на неделю», см. `queue_target_for_user`), а ровно столько,
+    сколько успело сработать тиков расписания -- без потолка.
+
+    Планку берём ту же, что и у резерва (`queue_target_for_user`): 3 поста
+    бесплатному пользователю, 7 -- оплатившему. Так канал с автопилотом,
+    у которого Telegram вдруг перестал принимать сообщения (пост остаётся
+    `pending`, см. generate_for_channel), тоже не будет жечь токены на
+    посты, которые некому даже подтвердить -- проверка на pending_count
+    работает одинаково для обоих режимов, отдельного условия на
+    auto_publish не нужно.
+    """
+    with session() as s:
+        channel = s.get(Channel, channel_id)
+        if not channel:
+            return
+        pending_count = len(s.exec(
+            select(Post).where(
+                Post.channel_id == channel_id,
+                Post.status.in_(["pending", "scheduled"])
+            )
+        ).all())
+        target = queue_target_for_user(s, channel.user_id)
+
+    if pending_count >= target:
+        logger.info(
+            f"канал {channel_id}: очередь уже полна ({pending_count}/{target}) -- "
+            f"плановую генерацию пропускаю"
+        )
+        return
+
+    await generate_for_channel(channel_id)
+
+
 async def charge_due_subscriptions():
     """
     Автосписание по подпискам, у которых наступила дата продления.
@@ -1389,7 +1431,7 @@ async def tick():
 
     for cid in due_ids:
         try:
-            await generate_for_channel(cid)
+            await _generate_if_due(cid)
         except Exception as e:
             logger.error(f"tick: канал {cid}: {e}")
 
