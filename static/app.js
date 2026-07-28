@@ -2995,11 +2995,24 @@ async function renderBilling(){
           }
         }
       });
+      // В истории платежей не было главного — суммы. Строка выглядела как
+      // «27.07.2026, 14:05 · 600 000 ток.»: внутренняя единица учёта на первом
+      // месте и ни рубля. Человек заходит сюда посмотреть, сколько и за что
+      // заплатил, поэтому деньги вынесены вперёд, а токены остались справочно.
+      // Прежний класс .src-url не подошёл: у него white-space:nowrap, и вторая
+      // строка в него не помещалась.
       $("payList").innerHTML=ps.length
-        ?ps.map(p=>`<div class="src-row">
-            <span class="src-url">${new Date(p.created_at+"Z").toLocaleString("ru-RU")} · ${fmt(p.tokens)} ток.</span>
-            <span class="chip ${p.status==="paid"?"chip-green":"chip-orange"}">${p.status==="paid"?"оплачено":"ожидает"}</span>
-          </div>`).join("")
+        ?ps.map(p=>{
+            const pkg=(App.cfg?.packages||[]).find(x=>x.id===p.package_id);
+            const when=new Date(p.created_at+"Z").toLocaleString("ru-RU");
+            return `<div class="src-row" style="align-items:flex-start">
+              <div style="min-width:0">
+                <div style="font-size:13px;color:var(--text);font-weight:600">${_rub(p.rub||0)}\u00A0₽${pkg?` · ${esc(pkg.title)}`:""}</div>
+                <div style="font-size:12px;color:var(--text-faint);margin-top:2px">${when} · ${fmt(p.tokens)} токенов</div>
+              </div>
+              <span class="chip ${p.status==="paid"?"chip-green":"chip-orange"}">${p.status==="paid"?"оплачено":"ожидает оплаты"}</span>
+            </div>`;
+          }).join("")
         :`<p style="font-size:13px;color:var(--text-faint)">Платежей пока не было.</p>`;
     }catch(_){}
   };
