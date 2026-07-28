@@ -40,7 +40,7 @@ async function ncGenerate(){
   $("nc_results").classList.remove("hidden");
   $("nc_results").innerHTML=`
     <h2 style="font-family:'Instrument Serif',serif;font-size:22px;font-weight:400;margin-bottom:4px">Варианты постов</h2>
-    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">Генерирую три варианта — выбери понравившийся.</p>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">Генерирую три варианта — выберите понравившийся.</p>
     <div id="ob_posts"></div>
     <div id="ob_load">
       ${[0,1,2].map(i=>`<div style="background:var(--surface);border:1.5px solid var(--border-soft);border-radius:var(--radius);padding:20px;margin-bottom:14px;opacity:${1-i*0.2}">

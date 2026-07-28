@@ -1445,7 +1445,7 @@ function renderNewChannel(){
             <input id="nc_chat" placeholder="@my_channel или https://t.me/channel" style="flex:1">
             <button class="btn-outline btn-sm" onclick="ncVerify()" id="nc_vbtn" style="white-space:nowrap">Проверить</button>
           </div>
-          <div class="hint">Сначала добавь бота <b>@${esc(App.cfg?.bot_username||"…")}</b> в админы канала, потом вставь @username и нажми «Проверить».</div>
+          <div class="hint">Сначала добавьте бота <b>@${esc(App.cfg?.bot_username||"…")}</b> в админы канала, потом вставьте @username и нажмите «Проверить».</div>
           <div id="nc_vmsg" style="font-size:13px;margin-top:6px"></div>
           <button class="btn-ghost btn-sm" onclick="ncSkipVerify()"
             style="margin-top:8px;font-size:13px;color:var(--accent)">Подключу позже →</button>
@@ -1658,7 +1658,7 @@ async function ncGenerate(){
   $("nc_results").classList.remove("hidden");
   $("nc_results").innerHTML=`
     <h2 style="font-family:'Instrument Serif',serif;font-size:22px;font-weight:400;margin-bottom:4px">Варианты постов</h2>
-    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">Генерирую три варианта — выбери понравившийся.</p>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">Генерирую три варианта — выберите понравившийся.</p>
     <div id="ob_posts"></div>
     <div id="ob_load">
       ${[0,1,2].map(i=>`<div style="background:var(--surface);border:1.5px solid var(--border-soft);border-radius:var(--radius);padding:20px;margin-bottom:14px;opacity:${1-i*0.2}">
@@ -2522,7 +2522,7 @@ function renderSettings(){
           ? '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--green-bg);border-radius:10px;font-size:14px;color:var(--green)">✅ Подключено — уведомления активны</div>'
           : '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;line-height:1.6">Нажмите кнопку — бот пришлёт приветствие и начнёт отправлять уведомления.</div>'
             + '<button class="btn" onclick="openTgConnect()" style="display:inline-flex;margin-bottom:4px">💬 Подключить уведомления →</button>'
-            + '<div class="hint" style="margin-top:8px">Откроется бот — нажми Start</div>'
+            + '<div class="hint" style="margin-top:8px">Откроется бот — нажмите Start</div>'
         }
       </div>
       <div class="toggle-row">
@@ -2535,9 +2535,13 @@ function renderSettings(){
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Протестировать</div>
-      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Сгенерировать тестовый пост с текущими настройками.</p>
-      <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Создать тестовый пост</button>
+      <div class="card-title">Проверить настройки</div>
+      <!-- Слово «тестовый» обещало пробный прогон без последствий, а кнопка
+           дёргает тот же /generate, что и «Написать пост сейчас» в очереди:
+           пост настоящий, тратит токены и остаётся в очереди. Называем вещи
+           одинаково в обоих местах и сразу говорим про расход. -->
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Напишем пост прямо сейчас — посмотрите, что получается с текущими настройками. Пост обычный: тратит токены и встаёт в очередь, сам не опубликуется.</p>
+      <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Написать пост сейчас</button>
       <div id="test_result" style="margin-top:12px"></div>
     </div>
     <div class="row between mt-lg">

@@ -15,7 +15,7 @@ function renderNewChannel(){
             <input id="nc_chat" placeholder="@my_channel или https://t.me/channel" style="flex:1">
             <button class="btn-outline btn-sm" onclick="ncVerify()" id="nc_vbtn" style="white-space:nowrap">Проверить</button>
           </div>
-          <div class="hint">Сначала добавь бота <b>@${esc(App.cfg?.bot_username||"…")}</b> в админы канала, потом вставь @username и нажми «Проверить».</div>
+          <div class="hint">Сначала добавьте бота <b>@${esc(App.cfg?.bot_username||"…")}</b> в админы канала, потом вставьте @username и нажмите «Проверить».</div>
           <div id="nc_vmsg" style="font-size:13px;margin-top:6px"></div>
           <button class="btn-ghost btn-sm" onclick="ncSkipVerify()"
             style="margin-top:8px;font-size:13px;color:var(--accent)">Подключу позже →</button>

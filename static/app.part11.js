@@ -457,7 +457,7 @@ function renderSettings(){
           ? '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--green-bg);border-radius:10px;font-size:14px;color:var(--green)">✅ Подключено — уведомления активны</div>'
           : '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;line-height:1.6">Нажмите кнопку — бот пришлёт приветствие и начнёт отправлять уведомления.</div>'
             + '<button class="btn" onclick="openTgConnect()" style="display:inline-flex;margin-bottom:4px">💬 Подключить уведомления →</button>'
-            + '<div class="hint" style="margin-top:8px">Откроется бот — нажми Start</div>'
+            + '<div class="hint" style="margin-top:8px">Откроется бот — нажмите Start</div>'
         }
       </div>
       <div class="toggle-row">
@@ -470,9 +470,13 @@ function renderSettings(){
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Протестировать</div>
-      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Сгенерировать тестовый пост с текущими настройками.</p>
-      <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Создать тестовый пост</button>
+      <div class="card-title">Проверить настройки</div>
+      <!-- Слово «тестовый» обещало пробный прогон без последствий, а кнопка
+           дёргает тот же /generate, что и «Написать пост сейчас» в очереди:
+           пост настоящий, тратит токены и остаётся в очереди. Называем вещи
+           одинаково в обоих местах и сразу говорим про расход. -->
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Напишем пост прямо сейчас — посмотрите, что получается с текущими настройками. Пост обычный: тратит токены и встаёт в очередь, сам не опубликуется.</p>
+      <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Написать пост сейчас</button>
       <div id="test_result" style="margin-top:12px"></div>
     </div>
     <div class="row between mt-lg">
