@@ -145,7 +145,7 @@ function pickChannelType(type){
   if(ta) ta.style.background=type==="thematic"?"var(--accent-soft)":"";
   if(tn) tn.style.border=type==="news"?"2px solid var(--accent)":"2px solid var(--border-soft)";
   if(tn) tn.style.background=type==="news"?"var(--accent-soft)":"";
-  if(tl) tl.textContent=type==="news"?"Проверять новости каждые":"Расписание";
+  if(tl) tl.textContent=type==="news"?"Как часто проверять новости":"Как часто писать новый пост";
 }
 
 function initCookieBanner(){

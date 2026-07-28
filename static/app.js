@@ -757,7 +757,7 @@ function renderNewChannelSettings(){
     <label class="field mt"><span class="field-label">@username канала <span class="text-faint">(можно позже)</span></span>
       <input id="ncs_chat" placeholder="@my_channel" style="width:100%"></label>
 
-    <label class="field mt"><span class="field-label">Частота генерации</span>
+    <label class="field mt"><span class="field-label">Как часто писать новый пост</span>
       <select id="ncs_interval" style="width:100%">
         <option value="6">Каждые 6 часов</option>
         <option value="12" selected>Каждые 12 часов</option>
@@ -1542,7 +1542,7 @@ function renderNewChannel(){
       </div>
 
       <div>
-        <div class="field-label" style="margin-bottom:8px" id="nc_freq_label">Частота публикаций</div>
+        <div class="field-label" style="margin-bottom:8px" id="nc_freq_label">Как часто писать новый пост</div>
         <div class="seg" id="nc_hzs" style="flex-wrap:wrap">
           <button onclick="ncHz(0.25,this)">15 мин</button>
           <button onclick="ncHz(0.5,this)">30 мин</button>
@@ -1572,13 +1572,13 @@ function ncPickType(type){
   if(type==="thematic"){
     if(thematic){thematic.style.border="2px solid var(--accent)";thematic.style.background="var(--accent-soft)";}
     if(news){news.style.border="2px solid var(--border-soft)";news.style.background="";}
-    if(hint) hint.textContent="Тематический: публикует по расписанию всегда. Токены за каждый пост.";
-    if(label) label.textContent="Частота публикаций";
+    if(hint) hint.textContent="Тематический: пишем новый пост по расписанию, даже если новостей нет. Токены тратятся на каждый пост.";
+    if(label) label.textContent="Как часто писать новый пост";
   } else {
     if(news){news.style.border="2px solid var(--accent)";news.style.background="var(--accent-soft)";}
     if(thematic){thematic.style.border="2px solid var(--border-soft)";thematic.style.background="";}
-    if(hint) hint.textContent="Новостной: проверяет новости по расписанию. Токены только при публикации.";
-    if(label) label.textContent="Проверять новости каждые";
+    if(hint) hint.textContent="Новостной: проверяем новости по расписанию и пишем, только если есть о чём. Токены тратятся только тогда.";
+    if(label) label.textContent="Как часто проверять новости";
   }
 }
 
@@ -2623,20 +2623,20 @@ async function renderAdvanced(){
           background:${(c.channel_type||'thematic')==='thematic'?'var(--accent-soft)':''};
           border-radius:12px;padding:12px;cursor:pointer">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">✍️ Тематический</div>
-          <div style="font-size:11px;color:var(--text-dim)">Публикует по расписанию</div>
+          <div style="font-size:11px;color:var(--text-dim)">Пишем по расписанию</div>
         </div>
         <div onclick="pickChannelType('news')" id="adv_type_news"
           style="border:2px solid ${(c.channel_type||'thematic')==='news'?'var(--accent)':'var(--border-soft)'};
           background:${(c.channel_type||'thematic')==='news'?'var(--accent-soft)':''};
           border-radius:12px;padding:12px;cursor:pointer">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">📡 Новостной</div>
-          <div style="font-size:11px;color:var(--text-dim)">Только при наличии новостей</div>
+          <div style="font-size:11px;color:var(--text-dim)">Пишем, только если есть новость</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title" id="adv_sched_title">${(c.channel_type||'thematic')==='news'?'Проверять новости каждые':'Расписание'}</div>
+      <div class="card-title" id="adv_sched_title">${(c.channel_type||'thematic')==='news'?'Как часто проверять новости':'Как часто писать новый пост'}</div>
       <div style="margin-bottom:12px">
         <div class="field-label" style="margin-bottom:8px">Интервал</div>
         <div class="seg" id="seg_int" style="flex-wrap:wrap">
@@ -3370,7 +3370,7 @@ function pickChannelType(type){
   if(ta) ta.style.background=type==="thematic"?"var(--accent-soft)":"";
   if(tn) tn.style.border=type==="news"?"2px solid var(--accent)":"2px solid var(--border-soft)";
   if(tn) tn.style.background=type==="news"?"var(--accent-soft)":"";
-  if(tl) tl.textContent=type==="news"?"Проверять новости каждые":"Расписание";
+  if(tl) tl.textContent=type==="news"?"Как часто проверять новости":"Как часто писать новый пост";
 }
 
 function initCookieBanner(){

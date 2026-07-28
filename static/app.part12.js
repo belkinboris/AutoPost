@@ -77,20 +77,20 @@ async function renderAdvanced(){
           background:${(c.channel_type||'thematic')==='thematic'?'var(--accent-soft)':''};
           border-radius:12px;padding:12px;cursor:pointer">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">✍️ Тематический</div>
-          <div style="font-size:11px;color:var(--text-dim)">Публикует по расписанию</div>
+          <div style="font-size:11px;color:var(--text-dim)">Пишем по расписанию</div>
         </div>
         <div onclick="pickChannelType('news')" id="adv_type_news"
           style="border:2px solid ${(c.channel_type||'thematic')==='news'?'var(--accent)':'var(--border-soft)'};
           background:${(c.channel_type||'thematic')==='news'?'var(--accent-soft)':''};
           border-radius:12px;padding:12px;cursor:pointer">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">📡 Новостной</div>
-          <div style="font-size:11px;color:var(--text-dim)">Только при наличии новостей</div>
+          <div style="font-size:11px;color:var(--text-dim)">Пишем, только если есть новость</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title" id="adv_sched_title">${(c.channel_type||'thematic')==='news'?'Проверять новости каждые':'Расписание'}</div>
+      <div class="card-title" id="adv_sched_title">${(c.channel_type||'thematic')==='news'?'Как часто проверять новости':'Как часто писать новый пост'}</div>
       <div style="margin-bottom:12px">
         <div class="field-label" style="margin-bottom:8px">Интервал</div>
         <div class="seg" id="seg_int" style="flex-wrap:wrap">

@@ -22,7 +22,7 @@ function renderNewChannelSettings(){
     <label class="field mt"><span class="field-label">@username канала <span class="text-faint">(можно позже)</span></span>
       <input id="ncs_chat" placeholder="@my_channel" style="width:100%"></label>
 
-    <label class="field mt"><span class="field-label">Частота генерации</span>
+    <label class="field mt"><span class="field-label">Как часто писать новый пост</span>
       <select id="ncs_interval" style="width:100%">
         <option value="6">Каждые 6 часов</option>
         <option value="12" selected>Каждые 12 часов</option>

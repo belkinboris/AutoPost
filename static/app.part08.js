@@ -112,7 +112,7 @@ function renderNewChannel(){
       </div>
 
       <div>
-        <div class="field-label" style="margin-bottom:8px" id="nc_freq_label">Частота публикаций</div>
+        <div class="field-label" style="margin-bottom:8px" id="nc_freq_label">Как часто писать новый пост</div>
         <div class="seg" id="nc_hzs" style="flex-wrap:wrap">
           <button onclick="ncHz(0.25,this)">15 мин</button>
           <button onclick="ncHz(0.5,this)">30 мин</button>
@@ -142,13 +142,13 @@ function ncPickType(type){
   if(type==="thematic"){
     if(thematic){thematic.style.border="2px solid var(--accent)";thematic.style.background="var(--accent-soft)";}
     if(news){news.style.border="2px solid var(--border-soft)";news.style.background="";}
-    if(hint) hint.textContent="Тематический: публикует по расписанию всегда. Токены за каждый пост.";
-    if(label) label.textContent="Частота публикаций";
+    if(hint) hint.textContent="Тематический: пишем новый пост по расписанию, даже если новостей нет. Токены тратятся на каждый пост.";
+    if(label) label.textContent="Как часто писать новый пост";
   } else {
     if(news){news.style.border="2px solid var(--accent)";news.style.background="var(--accent-soft)";}
     if(thematic){thematic.style.border="2px solid var(--border-soft)";thematic.style.background="";}
-    if(hint) hint.textContent="Новостной: проверяет новости по расписанию. Токены только при публикации.";
-    if(label) label.textContent="Проверять новости каждые";
+    if(hint) hint.textContent="Новостной: проверяем новости по расписанию и пишем, только если есть о чём. Токены тратятся только тогда.";
+    if(label) label.textContent="Как часто проверять новости";
   }
 }
 
