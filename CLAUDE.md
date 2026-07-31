@@ -40,15 +40,16 @@ cd static && cat app.part*.js > app.js && node --check app.js
 
 Новая логика — через **новые таблицы** (`PostApproval`, `TelegramIdentity`,
 `Subscription`, `IdempotencyKey`, `LandingEvent`, `ProductEvent`,
-`TrafficAttribution` сделаны именно так). `create_all()` создаёт их безопасно.
+`TrafficAttribution`, `PostFeedback` сделаны именно так). `create_all()`
+создаёт их безопасно.
 
 Если дрейф схемы уже случился — добавить колонку **идемпотентной миграцией**
 в `_add_missing_columns()` (`database.py`) с проверкой через `inspector`
 **перед** изменением. Примеры там уже есть.
 
-Аналитические таблицы (`LandingEvent`, `ProductEvent`, `TrafficAttribution`)
-намеренно **без FK** на `user.id` — чтобы не ломать удаление аккаунта.
-Не добавлять FK в них.
+Аналитические таблицы (`LandingEvent`, `ProductEvent`, `TrafficAttribution`,
+`PostFeedback`) намеренно **без FK** на `user.id` — чтобы не ломать удаление
+аккаунта. Не добавлять FK в них.
 
 ### 3. Удаление аккаунта — минное поле
 
@@ -56,7 +57,9 @@ cd static && cat app.part*.js > app.js && node --check app.js
 (`User.referred_by`, `IdempotencyKey`, `PostApproval` + `TelegramIdentity`),
 а четвёртый (`Subscription`) поймали тестом до прода.
 **Добавили новую таблицу с FK на `user.id`, `post.id` или `channel.id` —
-допишите её очистку в `delete_account()`.**
+допишите её очистку в `delete_account()`.** Таблицу БЕЗ FK, но с `user_id`
+внутри (`PostFeedback`), тоже: падения не будет, но данные человека после
+удаления аккаунта остаться не должны.
 
 Ловушка внутри ловушки: при неизвестном FK шаг 7 не отдаёт ошибку, а
 анонимизирует запись и возвращает `{"ok": true}`. Проверять надо не код
@@ -119,7 +122,7 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 96 passed, 11 skipped
+python3 -m pytest -q          # ожидается 124 passed, 11 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__
@@ -156,13 +159,14 @@ pw.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/
 
 ## Известные проблемы (честно)
 
-- **Тесты.** `python3 -m pytest -q` даёт 96 прошедших и 11 пропущенных
+- **Тесты.** `python3 -m pytest -q` даёт 124 прошедших и 11 пропущенных
   (28.07). Пропущены `test_quickstart_flow.py` и `test_topic_validation.py`:
   оба ходят в живую модель и тратят токены, запуск по `RUN_LLM_TESTS=1`.
-  Покрыты удаление аккаунта, автосписание, дедупликация и резерв очереди
-  (`test_queue_reserve.py`) — то есть всё, что уже ломалось в проде. Не
-  покрыт фронтенд: там регрессии по-прежнему ловятся только глазами.
-  Поведение модели на граничных темах проверяется
+  Покрыты удаление аккаунта, автосписание, дедупликация, резерв очереди
+  (`test_queue_reserve.py`) и прогноз расписания (`test_schedule_preview.py`)
+  — то есть всё, что уже ломалось в проде. Не покрыт фронтенд: там регрессии
+  по-прежнему ловятся только глазами. Поведение модели на граничных темах
+  проверяется
   только под `RUN_LLM_TESTS=1` — в обычном прогоне оно не проверено, и это
   видно по пропускам.
 - **Деплой ломается**: Timeweb периодически не может склонировать репозиторий

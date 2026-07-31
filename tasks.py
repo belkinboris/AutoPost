@@ -885,6 +885,79 @@ def _is_due(channel: Channel, now: datetime) -> bool:
     return False
 
 
+def project_upcoming_slots(channel: Channel, now: datetime, count: int = 30) -> list:
+    """Прогноз следующих `count` моментов автопубликации по ТЕКУЩИМ настройкам
+    расписания -- для календаря в кабинете (владелец 28.07 попросил, чтобы
+    смена частоты сразу отражалась в календаре, а не только в момент, когда
+    пост реально опубликован).
+
+    Намеренно не вызывать для канала без автопилота: там нет обязательства
+    "выйдет само" вообще, показывать прогноз публикации значило бы обещать
+    то, чего система не делает (принцип 5) -- эту проверку оставляем на
+    вызывающей стороне (main.py), а не здесь, чтобы функция при этом
+    оставалась чистой математикой расписания и её было проще тестировать.
+
+    Без jitter: `_next_publish_time` в реальной генерации применяет
+    случайный сдвиг, чтобы посты не выходили "по секундомеру", но для
+    прогноза это дало бы дни, прыгающие между обновлениями страницы без
+    всякой пользы -- берём середину интервала.
+    """
+    slots = []
+    if channel.schedule_kind == "daily":
+        try:
+            times = sorted(json.loads(channel.daily_times or "[]"))
+        except Exception:
+            times = []
+        if not times:
+            return []
+        cursor = now
+        # Не больше 400 дней вперёд, даже если count большой -- защита от
+        # зацикливания при пустом/испорченном daily_times.
+        for _ in range(400):
+            if len(slots) >= count:
+                break
+            for hhmm in times:
+                try:
+                    hh, mm = map(int, hhmm.split(":"))
+                except Exception:
+                    continue
+                candidate = cursor.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if candidate > now:
+                    slots.append(candidate)
+                if len(slots) >= count:
+                    break
+            cursor = cursor + timedelta(days=1)
+        return slots[:count]
+
+    if channel.schedule_kind == "interval":
+        base_seconds = max(60, channel.interval_hours * 3600)
+        ws, we = channel.publish_window_start, channel.publish_window_end
+        cursor = channel.last_generated_at or now
+        for _ in range(count * 3):  # запас на случаи, которые окно сдвигает вперёд
+            if len(slots) >= count:
+                break
+            cursor = cursor + timedelta(seconds=base_seconds)
+            slot = cursor
+            if ws and we:
+                try:
+                    wsh, wsm = map(int, ws.split(":"))
+                    weh, wem = map(int, we.split(":"))
+                    window_start = slot.replace(hour=wsh, minute=wsm, second=0, microsecond=0)
+                    window_end = slot.replace(hour=weh, minute=wem, second=0, microsecond=0)
+                    if slot < window_start:
+                        slot = window_start
+                    elif slot > window_end:
+                        slot = (slot + timedelta(days=1)).replace(hour=wsh, minute=wsm, second=0)
+                except Exception:
+                    pass
+            if slot > now:
+                slots.append(slot)
+                cursor = slot
+        return slots[:count]
+
+    return []
+
+
 _last_update_id = 0
 _last_main_bot_update_id = 0
 
@@ -1143,6 +1216,48 @@ async def _ensure_queue(published_post_id: int):
     await _refill_if_active(channel_id)
 
 
+async def _generate_if_due(channel_id: int):
+    """Плановая генерация по расписанию (`tick`) -- но только если очередь
+    ещё не набрала целевую глубину.
+
+    Владелец 28.07 явно решил: генерация не должна расти бесконечно, если
+    пользователь не заходит и не разбирает очередь. До этой проверки
+    `_is_due` смотрел только на прошедшее время, а сколько постов уже висит
+    нерешённых -- не проверял вовсе. За неделю без единого решения канал с
+    интервалом раз в сутки получал не 7 постов (обещанная онбордингом
+    «очередь на неделю», см. `queue_target_for_user`), а ровно столько,
+    сколько успело сработать тиков расписания -- без потолка.
+
+    Планку берём ту же, что и у резерва (`queue_target_for_user`): 3 поста
+    бесплатному пользователю, 7 -- оплатившему. Так канал с автопилотом,
+    у которого Telegram вдруг перестал принимать сообщения (пост остаётся
+    `pending`, см. generate_for_channel), тоже не будет жечь токены на
+    посты, которые некому даже подтвердить -- проверка на pending_count
+    работает одинаково для обоих режимов, отдельного условия на
+    auto_publish не нужно.
+    """
+    with session() as s:
+        channel = s.get(Channel, channel_id)
+        if not channel:
+            return
+        pending_count = len(s.exec(
+            select(Post).where(
+                Post.channel_id == channel_id,
+                Post.status.in_(["pending", "scheduled"])
+            )
+        ).all())
+        target = queue_target_for_user(s, channel.user_id)
+
+    if pending_count >= target:
+        logger.info(
+            f"канал {channel_id}: очередь уже полна ({pending_count}/{target}) -- "
+            f"плановую генерацию пропускаю"
+        )
+        return
+
+    await generate_for_channel(channel_id)
+
+
 async def charge_due_subscriptions():
     """
     Автосписание по подпискам, у которых наступила дата продления.
@@ -1389,7 +1504,7 @@ async def tick():
 
     for cid in due_ids:
         try:
-            await generate_for_channel(cid)
+            await _generate_if_due(cid)
         except Exception as e:
             logger.error(f"tick: канал {cid}: {e}")
 

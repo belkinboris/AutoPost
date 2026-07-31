@@ -27,7 +27,7 @@ import tasks
 from database import (
     init_db, session,
     User, Channel, Source, Post, Payment, Referral, LandingEvent, IdempotencyKey, ProductEvent,
-    TrafficAttribution, PostApproval, TelegramIdentity,
+    TrafficAttribution, PostApproval, TelegramIdentity, PostFeedback,
 )
 from attribution import classify_utm
 from pydantic import BaseModel as _BaseModel
@@ -167,6 +167,10 @@ app.include_router(user_journeys_router)
 from internal_user_events import router as user_events_router
 app.include_router(user_events_router)
 
+# Ручное начисление токенов владельцем (себе для тестов, людям — при сбоях).
+from internal_admin_tokens import router as admin_tokens_router
+app.include_router(admin_tokens_router)
+
 # ── Авторизация ───────────────────────────────────────────────
 
 def current_user(authorization: str = Header(default="")) -> User:
@@ -245,6 +249,25 @@ def _own_channel(s, channel_id: int, user: User) -> Channel:
     if not ch or ch.user_id != user.id:
         raise HTTPException(404, "Канал не найден")
     return ch
+
+
+def _channel_limit(s, user_id: int) -> int:
+    """Сколько каналов разрешено пользователю. 0 -- без лимита («Агентство»).
+
+    Признак оплаты тот же, что и у глубины очереди (`queue_target_for_user` в
+    tasks.py): платёж со статусом "paid". Берём максимум по всем оплаченным
+    пакетам, а не последний -- если человек купил «Бизнес», а потом добрал
+    «Старт», отнимать у него уже оплаченные каналы нельзя.
+    """
+    paid = s.exec(
+        select(Payment).where(Payment.user_id == user_id, Payment.status == "paid")
+    ).all()
+    if not paid:
+        return config.FREE_CHANNELS
+    limits = [config.CHANNELS_BY_PACKAGE.get(p.package_id, config.FREE_CHANNELS) for p in paid]
+    if any(limit == 0 for limit in limits):
+        return 0
+    return max(limits)
 
 
 def _own_post(s, post_id: int, user: User) -> Post:
@@ -737,6 +760,30 @@ def create_channel(data: ChannelIn, user: User = Depends(current_user)):
                         f"(existing=«{existing_channel.about}» vs new=«{data.about}») -- stale request_id, создаю новый канал, НЕ возвращаю старый"
                     )
 
+        # Лимит каналов по тарифу. Проверяем ПОСЛЕ идемпотентности: повторный
+        # клик по той же кнопке не должен упираться в лимит из-за канала,
+        # который сам же и создал.
+        #
+        # Уже созданные сверх лимита каналы не трогаем -- ограничение работает
+        # только вперёд. Отнимать у людей то, чем они уже пользуются, из-за
+        # нашей же недоделанной проверки нельзя.
+        limit = _channel_limit(s, user.id)
+        if limit:
+            existing = len(s.exec(select(Channel).where(Channel.user_id == user.id)).all())
+            if existing >= limit:
+                logger.info(
+                    f"create_channel: отказ по лимиту тарифа, user_id={user.id} "
+                    f"каналов={existing} лимит={limit}"
+                )
+                raise HTTPException(
+                    400,
+                    f"Больше каналов не добавить: на вашем тарифе их {limit}, "
+                    f"а у вас уже {existing}. Выберите тариф побольше в разделе «Тарифы»."
+                    if limit > 1 else
+                    f"На бесплатном тарифе доступен один канал, он у вас уже есть. "
+                    f"Чтобы вести несколько каналов, выберите тариф в разделе «Тарифы».",
+                )
+
         ch = Channel(
             user_id=user.id,
             title=data.title,
@@ -1039,12 +1086,90 @@ def list_posts(channel_id: int, user: User = Depends(current_user)):
                 )
             ).all()
         }
+        # Оценки автора (👍/👎) -- одним запросом на весь список, а не по
+        # запросу на карточку.
+        feedback = {
+            f.post_id: f.verdict
+            for f in s.exec(
+                select(PostFeedback).where(PostFeedback.user_id == user.id)
+            ).all()
+        }
         out = []
         for p in posts:
             d = p.model_dump()
             d["approval_deadline"] = deadlines.get(p.id)
+            d["feedback"] = feedback.get(p.id)
             out.append(d)
         return out
+
+
+class PostFeedbackIn(_BaseModel):
+    verdict: str    # "up" | "down" | "none" (снять оценку)
+
+
+@app.post("/api/posts/{post_id}/feedback")
+def post_feedback(post_id: int, data: PostFeedbackIn, user: User = Depends(current_user)):
+    """
+    Оценка поста автором: 👍 / 👎 / снять оценку.
+
+    Ничего в поведении продукта не меняет -- ни публикацию, ни генерацию.
+    Это накопление данных для C1 («оценить качество постов честно»): по
+    опубликован/отклонён судить о качестве нельзя, отклонить могли и из-за
+    неподходящей темы.
+    """
+    if data.verdict not in ("up", "down", "none"):
+        raise HTTPException(400, "verdict должен быть 'up', 'down' или 'none'")
+
+    with session() as s:
+        post = _own_post(s, post_id, user)
+        existing = s.exec(
+            select(PostFeedback).where(
+                PostFeedback.post_id == post_id,
+                PostFeedback.user_id == user.id,
+            )
+        ).first()
+
+        if data.verdict == "none":
+            if existing:
+                s.delete(existing)
+                s.commit()
+            return {"ok": True, "verdict": None}
+
+        if existing:
+            existing.verdict = data.verdict
+            existing.updated_at = datetime.utcnow()
+            s.add(existing)
+        else:
+            s.add(PostFeedback(
+                post_id=post_id, user_id=user.id,
+                channel_id=post.channel_id, verdict=data.verdict,
+            ))
+        s.commit()
+        return {"ok": True, "verdict": data.verdict}
+
+
+@app.get("/api/channels/{channel_id}/schedule_preview")
+def schedule_preview(channel_id: int, user: User = Depends(current_user)):
+    """
+    Прогноз ближайших автопубликаций для календаря в кабинете (см. C12 в
+    PRODUCT_ROADMAP.md, запрос владельца 28.07: смена частоты должна сразу
+    отражаться в календаре).
+
+    Отдаём только для канала с включённым автопилотом. Без него у постов нет
+    даты, когда они выйдут сами -- решение всегда за пользователем, и любой
+    прогноз здесь читался бы как обещание автопубликации, которого система
+    не выполняет (принцип 5 в CLAUDE.md).
+    """
+    with session() as s:
+        ch = _own_channel(s, channel_id, user)
+        # Те же условия, что и у настоящего tick() (tasks.py: due_ids
+        # собираются по `c.verified and _is_due(...)`) -- без подтверждённого
+        # бота автопилот не публикует ничего и никогда, и прогноз дат,
+        # которые не наступят, был бы обманом, а не прогнозом.
+        if not ch.auto_publish or not ch.verified or not ch.enabled:
+            return {"slots": []}
+        slots = tasks.project_upcoming_slots(ch, datetime.utcnow(), count=30)
+        return {"slots": [s.isoformat() + "Z" for s in slots]}
 
 
 @app.patch("/api/posts/{post_id}")
@@ -1724,6 +1849,20 @@ def delete_account(user: User = Depends(current_user)):
             logger.info(f"{log_prefix} шаг 6.7: удалены Subscription={removed} (вместе с сохранённой картой)")
     except Exception as e:
         _fail("удаление Subscription", e)
+
+    # PostFeedback: FK у таблицы намеренно нет (правило 3), поэтому падения на
+    # шаге 7 она не вызовет. Но оценки постов -- это данные человека, и после
+    # удаления аккаунта они остаться не должны: id пользователя в них хранится
+    # прямым числом, а не обезличенной ссылкой.
+    try:
+        with session() as s:
+            removed = 0
+            for fb in s.exec(select(PostFeedback).where(PostFeedback.user_id == uid)).all():
+                s.delete(fb); removed += 1
+            s.commit()
+            logger.info(f"{log_prefix} шаг 6.8: удалены PostFeedback={removed}")
+    except Exception as e:
+        _fail("удаление PostFeedback", e)
 
     try:
         with session() as s:

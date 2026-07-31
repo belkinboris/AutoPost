@@ -125,8 +125,32 @@ function renderPostCard(p, pubMs, channelEnabled){
   } else {
     menuItems=`<button class="menu-item menu-item-danger" onclick="closePostMenu(${p.id});deletePost(${p.id})">Удалить</button>`;
   }
+  // Оценка поста автором. Стоит рядом с «⋯» и намеренно ничего не делает с
+  // самим постом -- не публикует, не отклоняет, не перегенерирует. Это только
+  // накопление данных о качестве (C1): по «опубликован/отклонён» о качестве
+  // судить нельзя, отклонить могли и из-за неподходящей темы.
+  // Показываем на всех карточках, включая опубликованные: понять, что пост
+  // был хорош, часто можно только постфактум.
+  // Выбранное состояние показываем прозрачностью и фоном, а НЕ разными
+  // эмодзи: вариант с модификатором тона (👍 против 👍🏻) на части платформ
+  // рисуется одинаково, и тогда понять, поставлена оценка или нет, нельзя
+  // вовсе. Прозрачность работает везде одинаково.
+  const fb = p.feedback || null;
+  const rateStyle = (active, color) =>
+    `padding:14px 10px;line-height:1;font-size:15px;border-radius:8px;` +
+    (active ? `opacity:1;background:${color}` : `opacity:.35`);
+  const feedbackBtns = `
+    <button class="btn-ghost btn-sm" onclick="ratePost(${p.id},'up')"
+      title="${fb === "up" ? "Убрать оценку" : "Хороший пост"}" aria-label="Хороший пост"
+      aria-pressed="${fb === "up"}"
+      style="${rateStyle(fb === "up", "var(--green-bg,#e3f4e8)")}">👍</button>
+    <button class="btn-ghost btn-sm" onclick="ratePost(${p.id},'down')"
+      title="${fb === "down" ? "Убрать оценку" : "Плохой пост"}" aria-label="Плохой пост"
+      aria-pressed="${fb === "down"}"
+      style="${rateStyle(fb === "down", "var(--red-bg,#fbe9e9)")}">👎</button>`;
+
   const menuBtn = menuItems ? `
-    <div style="position:relative;margin-left:auto">
+    <div style="position:relative">
       <!-- Замерено на 390px: цель была 32×27 — самая мелкая на экране, и стоит
            вплотную к «Опубликовать сейчас», то есть к необратимому действию.
            Промах пальцем здесь стоит поста, ушедшего в канал. У кнопки нет ни
@@ -135,6 +159,10 @@ function renderPostCard(p, pubMs, channelEnabled){
       <button class="btn-ghost btn-sm" onclick="togglePostMenu(${p.id})" style="padding:14px 16px;line-height:1">⋯</button>
       <div id="pmenu_${p.id}" class="post-menu hidden">${menuItems}</div>
     </div>` : "";
+
+  // Оценка и «⋯» уезжают вправо одной группой: margin-left:auto перенесён
+  // с меню на обёртку, иначе кнопки оценки прилипали бы к «Изменить».
+  const rightGroup = `<div style="display:flex;align-items:center;gap:2px;margin-left:auto">${feedbackBtns}${menuBtn}</div>`;
 
   return `<div class="post-card" id="pc_${p.id}">
     ${statusPill}
@@ -155,7 +183,7 @@ function renderPostCard(p, pubMs, channelEnabled){
     <div class="post-actions" style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       ${primaryBtn}${secondaryBtn}
       <button class="btn-ghost btn-sm hidden" id="save_${p.id}" onclick="savePost(${p.id})">💾 Сохранить</button>
-      ${menuBtn}
+      ${rightGroup}
     </div></div>`;
 }
 

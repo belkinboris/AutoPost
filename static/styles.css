@@ -177,6 +177,10 @@ label.field + label.field { margin-top: 16px; }
 .cal-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .cal-dot-published { background: var(--green); }
 .cal-dot-scheduled { background: var(--blue); }
+/* Полая, а не сплошная точка -- намеренно: это прогноз по текущей частоте
+   автопилота, а не факт и не обязательство. Публикация всё равно решается
+   в момент тика по расписанию, а не потому что дата нарисована здесь. */
+.cal-dot-forecast { background: transparent; border: 1px solid var(--text-faint); width: 5px; height: 5px; }
 .cal-more { font-size: 10px; color: var(--text-faint); }
 .cal-legend { display: flex; gap: 16px; margin-top: 10px; font-size: 12px; color: var(--text-faint); }
 .cal-legend span { display: flex; align-items: center; gap: 5px; }

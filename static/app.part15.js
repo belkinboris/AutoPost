@@ -94,6 +94,29 @@ async function rejectPost(id){
   try{await api("POST","/posts/"+id+"/reject");renderQueue();}
   catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
 }
+
+// Оценка поста (👍/👎). Повторное нажатие по той же кнопке снимает оценку --
+// иначе поставленную случайно уже не убрать.
+//
+// Перерисовываем только эту карточку, а не всю очередь: renderQueue()
+// перезапрашивал бы список и сбрасывал раскрытые посты и открытые меню, а
+// оценка ничего в очереди не двигает -- ни порядок, ни состав.
+async function ratePost(id, verdict){
+  const posts = App._queuePosts || [];
+  const post = posts.find(p => p.id === id);
+  if(!post) return;
+  const next = post.feedback === verdict ? "none" : verdict;
+  const previous = post.feedback || null;
+  post.feedback = next === "none" ? null : next;   // оптимистично, до ответа
+  renderQueueBody();
+  try{
+    await api("POST","/posts/"+id+"/feedback",{verdict:next});
+  }catch(e){
+    post.feedback = previous;                       // не сохранилось -- откатываем
+    renderQueueBody();
+    toast(e&&e.message?e.message:"Не удалось сохранить оценку","err");
+  }
+}
 async function deletePost(id){
   try{await api("DELETE","/posts/"+id);renderQueue();}
   catch(e){toast(e&&e.message?e.message:"Ошибка","err");}

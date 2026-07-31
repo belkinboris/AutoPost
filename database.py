@@ -269,6 +269,35 @@ class TrafficAttribution(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
+class PostFeedback(SQLModel, table=True):
+    """
+    Оценка поста автором: понравился / не понравился.
+
+    Зачем: единственный вопрос, на который у нас нет ответа, -- насколько
+    хороши посты на самом деле (C1 в PRODUCT_ROADMAP.md). Косвенные признаки
+    врут: опубликованный пост мог быть опубликован «и так сойдёт», а
+    отклонённый -- не подойти по теме, а не по качеству. Прямая оценка
+    накапливается сама, пока человек и так разбирает очередь.
+
+    Та же безопасная схема, что LandingEvent/ProductEvent/TrafficAttribution:
+    новая таблица, создаётся через create_all() без ALTER TABLE на
+    существующих. FK на post.id и user.id намеренно НЕТ -- иначе удаление
+    аккаунта снова упрётся в чужую таблицу (правило 3 в CLAUDE.md: на этом
+    уже четыре раза падал прод).
+
+    Одна строка на пару (пользователь, пост): повторная оценка перезаписывает
+    прежнюю, а не копит историю мнений -- считать среднее по нескольким
+    оценкам одного человека бессмысленно.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    post_id: int = Field(index=True)
+    user_id: int = Field(index=True)
+    channel_id: Optional[int] = Field(default=None, index=True)
+    verdict: str = Field(index=True)   # "up" | "down"
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class IdempotencyKey(SQLModel, table=True):
     """
     Защита от дублей при quick start (task item E): клиент генерирует
