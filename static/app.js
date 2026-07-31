@@ -789,6 +789,15 @@ function renderNewChannelSettings(){
 
     <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
       onclick="ncsCreate()" id="ncs_btn">Создать канал</button>
+    <!-- То же самое сказано под заголовком экрана, но там человек читает его
+         ДО формы -- когда ещё не понял, что настроек мало. Владелец 28.07
+         попросил сказать это прямо: короткий набор без пояснения читается как
+         «всё, что есть». Здесь строка стоит в момент решения, и называет
+         конкретные вещи, а не отсылает к вкладке. -->
+    <div class="hint" style="text-align:center;margin-top:10px">
+      Это только начало: стиль, источники, расписание и правила можно будет
+      настроить подробнее уже в самом канале.
+    </div>
   </div>`;
   setTimeout(()=>{const el=$("ncs_title");if(el) el.focus();},100);
 }
@@ -2001,8 +2010,32 @@ function renderPostCard(p, pubMs, channelEnabled){
   } else {
     menuItems=`<button class="menu-item menu-item-danger" onclick="closePostMenu(${p.id});deletePost(${p.id})">Удалить</button>`;
   }
+  // Оценка поста автором. Стоит рядом с «⋯» и намеренно ничего не делает с
+  // самим постом -- не публикует, не отклоняет, не перегенерирует. Это только
+  // накопление данных о качестве (C1): по «опубликован/отклонён» о качестве
+  // судить нельзя, отклонить могли и из-за неподходящей темы.
+  // Показываем на всех карточках, включая опубликованные: понять, что пост
+  // был хорош, часто можно только постфактум.
+  // Выбранное состояние показываем прозрачностью и фоном, а НЕ разными
+  // эмодзи: вариант с модификатором тона (👍 против 👍🏻) на части платформ
+  // рисуется одинаково, и тогда понять, поставлена оценка или нет, нельзя
+  // вовсе. Прозрачность работает везде одинаково.
+  const fb = p.feedback || null;
+  const rateStyle = (active, color) =>
+    `padding:14px 10px;line-height:1;font-size:15px;border-radius:8px;` +
+    (active ? `opacity:1;background:${color}` : `opacity:.35`);
+  const feedbackBtns = `
+    <button class="btn-ghost btn-sm" onclick="ratePost(${p.id},'up')"
+      title="${fb === "up" ? "Убрать оценку" : "Хороший пост"}" aria-label="Хороший пост"
+      aria-pressed="${fb === "up"}"
+      style="${rateStyle(fb === "up", "var(--green-bg,#e3f4e8)")}">👍</button>
+    <button class="btn-ghost btn-sm" onclick="ratePost(${p.id},'down')"
+      title="${fb === "down" ? "Убрать оценку" : "Плохой пост"}" aria-label="Плохой пост"
+      aria-pressed="${fb === "down"}"
+      style="${rateStyle(fb === "down", "var(--red-bg,#fbe9e9)")}">👎</button>`;
+
   const menuBtn = menuItems ? `
-    <div style="position:relative;margin-left:auto">
+    <div style="position:relative">
       <!-- Замерено на 390px: цель была 32×27 — самая мелкая на экране, и стоит
            вплотную к «Опубликовать сейчас», то есть к необратимому действию.
            Промах пальцем здесь стоит поста, ушедшего в канал. У кнопки нет ни
@@ -2011,6 +2044,10 @@ function renderPostCard(p, pubMs, channelEnabled){
       <button class="btn-ghost btn-sm" onclick="togglePostMenu(${p.id})" style="padding:14px 16px;line-height:1">⋯</button>
       <div id="pmenu_${p.id}" class="post-menu hidden">${menuItems}</div>
     </div>` : "";
+
+  // Оценка и «⋯» уезжают вправо одной группой: margin-left:auto перенесён
+  // с меню на обёртку, иначе кнопки оценки прилипали бы к «Изменить».
+  const rightGroup = `<div style="display:flex;align-items:center;gap:2px;margin-left:auto">${feedbackBtns}${menuBtn}</div>`;
 
   return `<div class="post-card" id="pc_${p.id}">
     ${statusPill}
@@ -2031,7 +2068,7 @@ function renderPostCard(p, pubMs, channelEnabled){
     <div class="post-actions" style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       ${primaryBtn}${secondaryBtn}
       <button class="btn-ghost btn-sm hidden" id="save_${p.id}" onclick="savePost(${p.id})">💾 Сохранить</button>
-      ${menuBtn}
+      ${rightGroup}
     </div></div>`;
 }
 
@@ -2287,6 +2324,29 @@ function _renderQueueStatus(c, pendingCount, opts){
     return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:14px;padding:14px 16px">
       <div style="font-size:13px;font-weight:600">Канал на паузе</div>
       <div style="font-size:13px;color:var(--text-dim);margin-top:2px">Пока канал на паузе, новые посты не создаются и ничего не публикуется. В очереди ${counter}.</div>
+    </div>`;
+  }
+
+  // Пустой баланс проверяем ДО всех остальных состояний -- это единственная
+  // причина, по которой не сработает вообще ничего: ни расписание, ни резерв,
+  // ни кнопка «Написать пост сейчас» (generate_for_channel выходит на
+  // `user.token_balance <= 0` первой же проверкой).
+  //
+  // Найдено владельцем на живом канале 28.07: он подключил канал, увидел
+  // зелёное «Канал подключён — готовим первые посты… страница обновится сама»
+  // и ждал. Посты не появлялись, причина не показывалась нигде -- она вылезла
+  // только после ручного нажатия «Написать пост сейчас», красной плашкой
+  // «лимит закончился». То есть экран пять минут обещал работу, которая не
+  // могла начаться (правило 5 в CLAUDE.md).
+  if((App.user?.token_balance || 0) <= 0){
+    return `<div class="card" style="background:var(--red-bg,var(--accent-soft));border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--red,var(--accent-dark));font-weight:600">Посты не создаются — закончились токены</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+        ${pendingCount > 0
+          ? `В очереди ${counter} — эти посты никуда не денутся, их можно опубликовать. Но новые мы не пишем: ни по расписанию, ни кнопкой.`
+          : `Ни по расписанию, ни кнопкой «Написать пост сейчас» — пополните баланс, и мы продолжим с того же места.`}
+      </div>
+      <button class="btn btn-sm" style="margin-top:10px" onclick="go('billing')">Пополнить баланс →</button>
     </div>`;
   }
 
@@ -3427,6 +3487,29 @@ async function _doPublishPost(id){
 async function rejectPost(id){
   try{await api("POST","/posts/"+id+"/reject");renderQueue();}
   catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
+}
+
+// Оценка поста (👍/👎). Повторное нажатие по той же кнопке снимает оценку --
+// иначе поставленную случайно уже не убрать.
+//
+// Перерисовываем только эту карточку, а не всю очередь: renderQueue()
+// перезапрашивал бы список и сбрасывал раскрытые посты и открытые меню, а
+// оценка ничего в очереди не двигает -- ни порядок, ни состав.
+async function ratePost(id, verdict){
+  const posts = App._queuePosts || [];
+  const post = posts.find(p => p.id === id);
+  if(!post) return;
+  const next = post.feedback === verdict ? "none" : verdict;
+  const previous = post.feedback || null;
+  post.feedback = next === "none" ? null : next;   // оптимистично, до ответа
+  renderQueueBody();
+  try{
+    await api("POST","/posts/"+id+"/feedback",{verdict:next});
+  }catch(e){
+    post.feedback = previous;                       // не сохранилось -- откатываем
+    renderQueueBody();
+    toast(e&&e.message?e.message:"Не удалось сохранить оценку","err");
+  }
 }
 async function deletePost(id){
   try{await api("DELETE","/posts/"+id);renderQueue();}

@@ -39,6 +39,15 @@ function renderNewChannelSettings(){
 
     <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
       onclick="ncsCreate()" id="ncs_btn">Создать канал</button>
+    <!-- То же самое сказано под заголовком экрана, но там человек читает его
+         ДО формы -- когда ещё не понял, что настроек мало. Владелец 28.07
+         попросил сказать это прямо: короткий набор без пояснения читается как
+         «всё, что есть». Здесь строка стоит в момент решения, и называет
+         конкретные вещи, а не отсылает к вкладке. -->
+    <div class="hint" style="text-align:center;margin-top:10px">
+      Это только начало: стиль, источники, расписание и правила можно будет
+      настроить подробнее уже в самом канале.
+    </div>
   </div>`;
   setTimeout(()=>{const el=$("ncs_title");if(el) el.focus();},100);
 }
