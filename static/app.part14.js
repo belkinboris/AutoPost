@@ -22,7 +22,6 @@ async function renderBilling(){
     ${(!App.cfg?.yookassa_enabled&&!App.cfg?.yoomoney_enabled)?`<div class="card" style="border-color:var(--accent);background:var(--accent-soft);margin-bottom:16px">
       <p style="color:var(--accent-dark)">Приём платежей настраивается.</p></div>`:""}
     ${_subscriptionCard(sub)}
-    ${_paymentMethodBlock()}
     ${plans.some(p=>p.regular)?`<div class="promo-bar">
       <b>Цены на время запуска.</b> Сервис ещё развивается — пока он в раннем доступе, тарифы держим ниже
       обычных.${App.cfg?.subscription_enabled?" Цена, по которой вы подписались, за вами сохранится.":""}
@@ -51,6 +50,7 @@ async function renderBilling(){
       </button>
       <div id="payList" class="hidden text-faint"></div>
     </div>
+    ${_paymentMethodBlock()}
     <div style="text-align:center;margin-top:16px;padding-bottom:8px">
       <button class="btn-danger btn-sm" onclick="deleteAccount()" style="font-size:12px;opacity:.6">Удалить аккаунт</button>
     </div></div>`;
@@ -72,15 +72,11 @@ async function renderBilling(){
   window._loadPayHistory = async function(){
     try{
       const ps=await api("GET","/payments");
-      ps.forEach(p=>{
-        if(p.status==="paid"){
-          const key="ym_paid_"+(p.id||p.label||p.created_at);
-          if(!localStorage.getItem(key)){
-            trackGoal("payment_success",{package_id:p.package_id||"",tokens:p.tokens||0,rub:p.rub||0});
-            localStorage.setItem(key,"1");
-          }
-        }
-      });
+      // Подстраховка: основной момент отправки цели "payment_success" --
+      // возврат со страницы оплаты (см. boot() в app.part16.js), этот вызов
+      // только досылает то, что могло не подтвердиться вовремя. Дедуп через
+      // localStorage внутри _reportPaidPayments не даст засчитать платёж дважды.
+      _reportPaidPayments(ps);
       // В истории платежей не было главного — суммы. Строка выглядела как
       // «27.07.2026, 14:05 · 600 000 ток.»: внутренняя единица учёта на первом
       // месте и ни рубля. Человек заходит сюда посмотреть, сколько и за что

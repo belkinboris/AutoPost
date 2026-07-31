@@ -37,6 +37,31 @@ function trackGoal(goal, params={}){
   }catch(_){}
 }
 
+// Отправляет цель "payment_success" в Метрику по каждому оплаченному платежу,
+// который ещё не отправляли (дедуп через localStorage — платёж не должен
+// засчитаться дважды). Найдено владельцем 31.07: реально это раньше вызывалось
+// ТОЛЬКО из раскрытия "Истории платежей" в настройках (см. renderBilling) —
+// случайное действие, которое почти никто не делает сразу после оплаты. Из-за
+// этого Яндекс.Директ не видел почти ни одной покупки: цель физически не
+// уходила в Метрику вовремя, хотя сама оплата проходила нормально. Теперь
+// вызывается сразу при возврате со страницы оплаты (см. boot()), а вызов из
+// истории платежей остаётся подстраховкой на случай, если платёж успел
+// подтвердиться в ЮKassa только уже после возврата пользователя.
+async function _reportPaidPayments(ps){
+  try{
+    const list = ps || await api("GET","/payments");
+    list.forEach(p=>{
+      if(p.status==="paid"){
+        const key="ym_paid_"+(p.id||p.label||p.created_at);
+        if(!localStorage.getItem(key)){
+          trackGoal("payment_success",{package_id:p.package_id||"",tokens:p.tokens||0,rub:p.rub||0});
+          localStorage.setItem(key,"1");
+        }
+      }
+    });
+  }catch(_){}
+}
+
 // ── CTA/Journey Diagnostics: захват lp_session + UTM из URL лендинга (Part 4) ──
 const _sentLandingEvents = new Set(); // дедуп в рамках одной загрузки страницы
 
@@ -458,14 +483,21 @@ function _intervalLabel(h){
 }
 function _nextGenerationLabel(c){
   if(c.enabled===false) return "на паузе";
-  // КРИТИЧНО (фикс противоречия): резерв очереди догенерируется на ближайшем
-  // тике планировщика (раз в минуту), а НЕ по интервалу расписания -- см.
-  // _refill_if_active в tasks.py. Пока очередь не заполнена до min_queue,
-  // честный ответ "в ближайшие минуты". Раньше здесь всегда считался
-  // интервал, и шапка канала обещала "через 12ч" ровно в тот момент, когда
-  // пост на самом деле появлялся через минуту.
-  const minQueue=c.queue_target||App.cfg?.min_queue||3;
-  if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
+  // КРИТИЧНО (фикс противоречия, часть 2): "в ближайшие минуты" верно только
+  // там, где резерв очереди реально ДОГЕНЕРИРУЕТСЯ на ближайшем тике --
+  // см. _refill_if_active в tasks.py. Для автопилота эта функция всего лишь
+  // return'ится сразу же (auto_publish -- ранний выход, коммит "Резерв
+  // очереди рос и при включённом автопилоте без всякой пользы"): плановая
+  // генерация публикует пост напрямую и происходит раз в interval_hours, а
+  // queue_count у автопилота всегда 0 вне зависимости от того, скоро
+  // следующий пост или через сутки. Раньше эта проверка стояла безусловно,
+  // и карточка автопилота с интервалом "раз в сутки" честно врала "в
+  // ближайшие минуты" сразу после публикации -- ровно то, что и заметил
+  // владелец 31.07 на канале с интервалом 24ч.
+  if(!c.auto_publish){
+    const minQueue=c.queue_target||App.cfg?.min_queue||3;
+    if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
+  }
   // Время следующей ГЕНЕРАЦИИ (не публикации!) = последняя генерация + интервал,
   // но не в прошлом. Публикация — отдельное понятие, происходит либо по явному
   // подтверждению пользователя, либо для scheduled-постов (см. renderPostCard).
@@ -604,9 +636,18 @@ function renderChanCard(c){
   // поэтому на паузе не создаётся ничего — а карточка обещала обратное, причём
   // строкой ниже той, где написано «На паузе». Про саму паузу тут не
   // повторяем: это уже сказано в статусе выше, здесь только последствие.
+  //
+  // Для автопилота «скоро появятся» тоже было ложью, только по другой причине
+  // (владелец 31.07): очереди у автопилота нет вообще -- генерация публикует
+  // пост сразу, минуя её (см. _refill_if_active в tasks.py, ранний выход при
+  // auto_publish). queue_count==0 у него -- нормальное постоянное состояние,
+  // а не "вот-вот заполнится". Объясняем это прямо, а не обещаем скорое
+  // появление того, чего не будет до следующего интервала.
   const emptyLine=c.enabled===false
     ? "Новые посты не создаются"
-    : "Очередь пуста — посты скоро появятся";
+    : c.auto_publish
+      ? "В очереди пусто — это нормально: автопилот пишет и сразу публикует, не копит очередь"
+      : "Очередь пуста — посты скоро появятся";
   const preview=c.next_post_preview
     ? `<div class="chan-preview">${renderTg(c.next_post_preview)}</div>`
     : `<div class="chan-preview chan-preview-empty">${emptyLine}</div>`;
@@ -3086,7 +3127,6 @@ async function renderBilling(){
     ${(!App.cfg?.yookassa_enabled&&!App.cfg?.yoomoney_enabled)?`<div class="card" style="border-color:var(--accent);background:var(--accent-soft);margin-bottom:16px">
       <p style="color:var(--accent-dark)">Приём платежей настраивается.</p></div>`:""}
     ${_subscriptionCard(sub)}
-    ${_paymentMethodBlock()}
     ${plans.some(p=>p.regular)?`<div class="promo-bar">
       <b>Цены на время запуска.</b> Сервис ещё развивается — пока он в раннем доступе, тарифы держим ниже
       обычных.${App.cfg?.subscription_enabled?" Цена, по которой вы подписались, за вами сохранится.":""}
@@ -3115,6 +3155,7 @@ async function renderBilling(){
       </button>
       <div id="payList" class="hidden text-faint"></div>
     </div>
+    ${_paymentMethodBlock()}
     <div style="text-align:center;margin-top:16px;padding-bottom:8px">
       <button class="btn-danger btn-sm" onclick="deleteAccount()" style="font-size:12px;opacity:.6">Удалить аккаунт</button>
     </div></div>`;
@@ -3136,15 +3177,11 @@ async function renderBilling(){
   window._loadPayHistory = async function(){
     try{
       const ps=await api("GET","/payments");
-      ps.forEach(p=>{
-        if(p.status==="paid"){
-          const key="ym_paid_"+(p.id||p.label||p.created_at);
-          if(!localStorage.getItem(key)){
-            trackGoal("payment_success",{package_id:p.package_id||"",tokens:p.tokens||0,rub:p.rub||0});
-            localStorage.setItem(key,"1");
-          }
-        }
-      });
+      // Подстраховка: основной момент отправки цели "payment_success" --
+      // возврат со страницы оплаты (см. boot() в app.part16.js), этот вызов
+      // только досылает то, что могло не подтвердиться вовремя. Дедуп через
+      // localStorage внутри _reportPaidPayments не даст засчитать платёж дважды.
+      _reportPaidPayments(ps);
       // В истории платежей не было главного — суммы. Строка выглядела как
       // «27.07.2026, 14:05 · 600 000 ток.»: внутренняя единица учёта на первом
       // месте и ни рубля. Человек заходит сюда посмотреть, сколько и за что
@@ -3773,6 +3810,12 @@ async function boot(){
       const params=new URLSearchParams(window.location.search);
       if(params.get("paid")){
         logProductEvent("payment_returned");
+        // Настоящая цель для Яндекс.Директ/Метрики -- здесь, а не в
+        // раскрытии "Истории платежей" (см. _reportPaidPayments). Два
+        // вызова: сразу и через 5с -- вебхук ЮKassa может подтвердить
+        // платёж на пару секунд позже, чем браузер вернётся с редиректом.
+        _reportPaidPayments();
+        setTimeout(_reportPaidPayments, 5000);
         params.delete("paid");
         const newUrl=window.location.pathname+(params.toString()?"?"+params.toString():"");
         window.history.replaceState({},"",newUrl);

@@ -866,16 +866,37 @@ def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depends(curr
 
 @app.delete("/api/channels/{channel_id}")
 def delete_channel(channel_id: int, user: User = Depends(current_user)):
-    from database import ChannelRule
+    from database import ChannelRule, PostApproval
     try:
         with session() as s:
             ch = _own_channel(s, channel_id, user)
+            # PostApproval -- FK и на post.id, и на channel.id (режим "публикация
+            # после подтверждения"). Найдено владельцем 31.07: удаление канала
+            # с хотя бы одним таймером подтверждения падало на FK-нарушении --
+            # ChannelRule/Source/Post чистились, а PostApproval нет. На Postgres
+            # это IntegrityError, пользователь видел общее "не удалось удалить
+            # канал, обновите страницу". Тот же класс бага, что уже трижды ловили
+            # в delete_account() (правило 3), только для другого эндпоинта.
+            #
+            # flush() после каждой партии обязателен: без явных relationship()
+            # между моделями SQLAlchemy не выстраивает DELETE-операторы одной
+            # транзакции в порядке зависимостей сам -- а SQLite проверяет FK
+            # немедленно на каждый оператор, а не в конце транзакции. Без
+            # flush() удаление падало даже ПОСЛЕ того как PostApproval стали
+            # чистить: DELETE FROM channel мог уйти раньше дочерних DELETE.
+            # Воспроизведено и проверено отдельным скриптом до правки.
+            for pa in s.exec(select(PostApproval).where(PostApproval.channel_id == channel_id)).all():
+                s.delete(pa)
+            s.flush()
             for src in s.exec(select(Source).where(Source.channel_id == channel_id)).all():
                 s.delete(src)
+            s.flush()
             for p in s.exec(select(Post).where(Post.channel_id == channel_id)).all():
                 s.delete(p)
+            s.flush()
             for r in s.exec(select(ChannelRule).where(ChannelRule.channel_id == channel_id)).all():
                 s.delete(r)
+            s.flush()
             s.delete(ch)
             s.commit()
     except HTTPException:
