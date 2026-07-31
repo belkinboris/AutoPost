@@ -252,22 +252,38 @@ def _own_channel(s, channel_id: int, user: User) -> Channel:
 
 
 def _channel_limit(s, user_id: int) -> int:
-    """Сколько каналов разрешено пользователю. 0 -- без лимита («Агентство»).
+    """Сколько каналов разрешено пользователю. 0 -- без лимита («Агентство»)."""
+    return _channel_limit_with_plan(s, user_id)[0]
+
+
+def _channel_limit_with_plan(s, user_id: int) -> tuple[int, str | None]:
+    """Лимит каналов и название тарифа, который его даёт (None -- бесплатный).
 
     Признак оплаты тот же, что и у глубины очереди (`queue_target_for_user` в
     tasks.py): платёж со статусом "paid". Берём максимум по всем оплаченным
     пакетам, а не последний -- если человек купил «Бизнес», а потом добрал
     «Старт», отнимать у него уже оплаченные каналы нельзя.
+
+    Название тарифа нужно отдельно от лимита: «Старт» (490 ₽) и бесплатный
+    тариф дают одинаковый лимит в 1 канал, но сообщение об отказе не может
+    называть оплаченный тариф бесплатным -- владелец поймал это на себе 31.07.
     """
     paid = s.exec(
         select(Payment).where(Payment.user_id == user_id, Payment.status == "paid")
     ).all()
     if not paid:
-        return config.FREE_CHANNELS
+        return config.FREE_CHANNELS, None
     limits = [config.CHANNELS_BY_PACKAGE.get(p.package_id, config.FREE_CHANNELS) for p in paid]
     if any(limit == 0 for limit in limits):
-        return 0
-    return max(limits)
+        return 0, None  # без лимита -- уточнять тариф в сообщении не для чего
+    best = max(limits)
+    title = None
+    for p, lim in zip(paid, limits):
+        if lim == best:
+            pkg = config.package_by_id(p.package_id)
+            if pkg:
+                title = pkg["title"]
+    return best, title
 
 
 def _own_post(s, post_id: int, user: User) -> Post:
@@ -608,6 +624,12 @@ def me(user: User = Depends(current_user)):
     with session() as s:
         refs = s.exec(select(Referral).where(Referral.referrer_id == user.id)).all()
         count = len(refs)
+        # Название тарифа для шапки (topbar показывает её на КАЖДОЙ странице,
+        # не только на "Тарифах"). Найдено владельцем 31.07 вместе с багом
+        # лимита каналов: шапка везде писала обезличенное "Тарифы", хотя
+        # человек уже оплатил -- негде было даже увидеть, какой тариф у него
+        # активен, не заходя специально в раздел оплаты.
+        _, plan_title = _channel_limit_with_plan(s, user.id)
     return {
         "id": user.id,
         "email": user.email,
@@ -618,6 +640,7 @@ def me(user: User = Depends(current_user)):
         "tg_chat_id": user.tg_chat_id,
         "notify_published": user.notify_published,
         "notify_low_tokens": user.notify_low_tokens,
+        "plan_title": plan_title,
     }
 
 
@@ -767,22 +790,33 @@ def create_channel(data: ChannelIn, user: User = Depends(current_user)):
         # Уже созданные сверх лимита каналы не трогаем -- ограничение работает
         # только вперёд. Отнимать у людей то, чем они уже пользуются, из-за
         # нашей же недоделанной проверки нельзя.
-        limit = _channel_limit(s, user.id)
+        limit, plan_title = _channel_limit_with_plan(s, user.id)
         if limit:
             existing = len(s.exec(select(Channel).where(Channel.user_id == user.id)).all())
             if existing >= limit:
                 logger.info(
                     f"create_channel: отказ по лимиту тарифа, user_id={user.id} "
-                    f"каналов={existing} лимит={limit}"
+                    f"каналов={existing} лимит={limit} тариф={plan_title or 'бесплатный'}"
                 )
-                raise HTTPException(
-                    400,
-                    f"Больше каналов не добавить: на вашем тарифе их {limit}, "
-                    f"а у вас уже {existing}. Выберите тариф побольше в разделе «Тарифы»."
-                    if limit > 1 else
-                    f"На бесплатном тарифе доступен один канал, он у вас уже есть. "
-                    f"Чтобы вести несколько каналов, выберите тариф в разделе «Тарифы».",
-                )
+                if limit > 1:
+                    msg = (
+                        f"Больше каналов не добавить: на вашем тарифе их {limit}, "
+                        f"а у вас уже {existing}. Выберите тариф побольше в разделе «Тарифы»."
+                    )
+                elif plan_title:
+                    # Найдено владельцем 31.07: «Старт» и бесплатный тариф оба дают
+                    # 1 канал, а сообщение раньше не различало их и называло
+                    # оплаченный тариф бесплатным.
+                    msg = (
+                        f"На тарифе «{plan_title}» доступен 1 канал — он у вас уже есть. "
+                        f"Чтобы вести несколько каналов, выберите тариф выше в разделе «Тарифы»."
+                    )
+                else:
+                    msg = (
+                        f"На бесплатном тарифе доступен один канал, он у вас уже есть. "
+                        f"Чтобы вести несколько каналов, выберите тариф в разделе «Тарифы»."
+                    )
+                raise HTTPException(400, msg)
 
         ch = Channel(
             user_id=user.id,

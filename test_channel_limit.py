@@ -51,6 +51,23 @@ async def test_free_user_gets_one_channel(client, token):
     r = await _create_channel(client, token, "Второй", "@limit_second")
     assert r.status_code == 400
     assert "один канал" in r.json()["detail"].lower()
+    assert "бесплатн" in r.json()["detail"].lower()
+
+
+async def test_paid_starter_limit_message_names_the_tier(client, token):
+    """Найдено владельцем 31.07: «Старт» тоже даёт 1 канал (как бесплатный),
+    но сообщение об отказе называло оплаченный тариф бесплатным."""
+    me = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    _pay(me.json()["id"], "p1")  # Старт, тоже лимит 1
+
+    r = await _create_channel(client, token, "Первый", "@starter_first")
+    assert r.status_code == 200, r.text
+
+    r = await _create_channel(client, token, "Второй", "@starter_second")
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "бесплатн" not in detail.lower(), "оплаченный тариф назван бесплатным"
+    assert "старт" in detail.lower()
 
 
 async def test_paid_pro_gets_three_channels(client, token):
@@ -108,6 +125,22 @@ async def test_existing_channels_over_limit_are_not_removed(client, token):
 
 
 # ── Ручное начисление токенов ─────────────────────────────────────────────
+
+# ── Название тарифа в /api/me (для шапки и карточек "Ваш тариф") ──────────
+
+async def test_me_plan_title_is_none_for_free_user(client, token):
+    r = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.json()["plan_title"] is None
+
+
+async def test_me_plan_title_names_paid_tier(client, token):
+    """Найдено владельцем 31.07: шапка и лимит каналов должны видеть один и
+    тот же тариф, а не рассинхронизироваться."""
+    me = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    _pay(me.json()["id"], "p1")  # Старт
+    r = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.json()["plan_title"] == "Старт"
+
 
 async def test_grant_tokens_adds_to_balance(client, token):
     me = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})

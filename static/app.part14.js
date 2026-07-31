@@ -15,6 +15,18 @@ async function renderBilling(){
     {id:"p4",name:"Агентство",price:4990,regular:9990,channels:0,postsMin:150,postsMax:300},
   ];
   const sub=App._subscription||null;
+  // Найдено владельцем 31.07: у кого уже есть тариф, тому не нужны во весь
+  // экран четыре карточки "Старт/Про/Бизнес/Агентство" -- нужен только свой
+  // тариф и способ его сменить. currentPlanId сначала берём из активной
+  // подписки (авторитетнее), иначе из App.user.plan_title (одноразовая
+  // оплата без рекуррента -- Subscription-строки нет, но тариф уже куплен).
+  let currentPlanId=null;
+  if(sub && sub.package_id) currentPlanId=sub.package_id;
+  else if(App.user?.plan_title){
+    const match=plans.find(p=>p.name===App.user.plan_title);
+    if(match) currentPlanId=match.id;
+  }
+  const hasPlan=!!currentPlanId;
   $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap">
     <div class="page-head"><h1>Тарифы</h1>
       <p>Осталось <b>${Math.floor((App.user?.token_balance||0)/40000)}–${Math.floor((App.user?.token_balance||0)/20000)}</b> постов.<br>
@@ -26,17 +38,26 @@ async function renderBilling(){
       <b>Цены на время запуска.</b> Сервис ещё развивается — пока он в раннем доступе, тарифы держим ниже
       обычных.${App.cfg?.subscription_enabled?" Цена, по которой вы подписались, за вами сохранится.":""}
     </div>`:""}
-    <div class="grid grid-2" style="margin-bottom:16px">
-      ${plans.map(p=>`<div class="price-card" style="position:relative;${p.popular?"border-color:var(--accent)":""}">
-        ${p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
+    ${hasPlan?`<div style="text-align:center;margin-bottom:16px">
+      <button class="btn-outline btn-sm" onclick="togglePlansGrid()" id="plans_toggle_btn">Показать другие тарифы</button>
+    </div>`:""}
+    <div id="plansGrid" class="grid grid-2 ${hasPlan?"hidden":""}" style="margin-bottom:16px">
+      ${plans.map(p=>{
+        const isCurrent=p.id===currentPlanId;
+        return `<div class="price-card" style="position:relative;${(p.popular&&!isCurrent)?"border-color:var(--accent)":""}${isCurrent?"border-color:var(--green,#2e7d32)":""}">
+        ${isCurrent?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--green,#2e7d32);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Ваш тариф</div>`
+          :p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
         <div class="p-name">${p.name}</div>
         ${p.regular?`<div class="p-regular">потом ${_rub(p.regular)} ₽</div>`:""}
         <div class="p-price" style="font-size:24px">${_rub(p.price)}\u00A0₽${App.cfg?.subscription_enabled?"/мес":""}</div>
         <div class="p-tokens" style="line-height:1.8">
           📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${_plural(p.channels,"канал","канала","каналов")}`}<br>
           ✦ ${p.postsMin}–${p.postsMax} постов${App.cfg?.subscription_enabled?"/мес":""}</div>
-        <button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>
-      </div>`).join("")}
+        ${isCurrent
+          ?`<div class="hint" style="text-align:center;margin-top:8px">Уже подключён</div>`
+          :`<button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>`}
+      </div>`;
+      }).join("")}
     </div>
     <div class="card" style="margin-bottom:16px">
       <div class="card-title">🎁 Реферальная программа</div>
@@ -62,9 +83,10 @@ async function renderBilling(){
         <button class="btn-outline btn-sm" onclick="navigator.clipboard.writeText('${esc(code)}').then(()=>toast('Скопировано','ok'))">Копировать</button>
       </div>
       <div style="font-size:13px;color:var(--text-dim);background:var(--surface2);border-radius:10px;padding:12px 14px;line-height:1.7">
-        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent);display:inline-block;padding:14px 0">@maintrpost_bot</a><br>
-        2. «Открыть АвтоПост» → Зарегистрироваться<br>
-        3. Введите реферальный код: <b>${esc(code)}</b>
+        <div style="font-weight:600;color:var(--text);margin-bottom:4px">Отправьте другу — эти шаги для него, не для вас:</div>
+        <div>1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">бота в Telegram</a> или сайт <a href="https://projectautopost.ru" target="_blank" style="color:var(--accent)">projectautopost.ru</a></div>
+        <div>2. Зарегистрируйтесь</div>
+        <div>3. Введите реферальный код: <b>${esc(code)}</b></div>
       </div>
       <div class="hint" style="margin-top:8px">Приглашений: <b>${me.referrals_count||0}</b></div>`;
   }catch(_){}
@@ -98,6 +120,14 @@ async function renderBilling(){
         :`<p style="font-size:13px;color:var(--text-faint)">Платежей пока не было.</p>`;
     }catch(_){}
   };
+}
+
+function togglePlansGrid(){
+  const grid=$("plansGrid"),btn=$("plans_toggle_btn");
+  if(!grid) return;
+  const hidden=grid.classList.contains("hidden");
+  grid.classList.toggle("hidden",!hidden);
+  if(btn) btn.textContent=hidden?"Скрыть тарифы":"Показать другие тарифы";
 }
 
 function togglePayHistory(){

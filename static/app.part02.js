@@ -185,12 +185,17 @@ function topbar(backView,backLabel){
   const lowBanner=low?`<div style="background:#fef3c7;border-bottom:1px solid #f59e0b;padding:8px 20px;font-size:13px;text-align:center;color:#92400e">
     ⚠️ Баланс заканчивается.
     <a onclick="go('billing')" style="color:#92400e;font-weight:600;cursor:pointer;text-decoration:underline">Пополнить →</a></div>`:"";
+  // Найдено владельцем 31.07: шапка на КАЖДОЙ странице писала обезличенное
+  // "Тарифы", даже когда тариф уже оплачен -- узнать, какой именно тариф
+  // активен, можно было только зайдя в сам раздел оплаты. Теперь показываем
+  // название тарифа прямо здесь, если он есть (App.user.plan_title из /api/me).
+  const planLabel=App.user?.plan_title?`Тариф: ${esc(App.user.plan_title)}`:"Тарифы";
   return `<div class="topbar">
     <a class="brand" onclick="go('dashboard')"><span class="brand-name">Авто<span>пост</span></span></a>
     <div class="topbar-right">
       <div class="token-pill" onclick="go('billing')">
         <span class="dot" style="background:var(--accent)"></span>
-        <span style="font-size:13px;font-weight:500;color:var(--text-dim)">Тарифы</span>
+        <span style="font-size:13px;font-weight:500;color:var(--text-dim)">${planLabel}</span>
       </div>
       <button class="btn-ghost btn-sm" onclick="logout()">Выйти</button>
     </div></div>${lowBanner}${back}`;
