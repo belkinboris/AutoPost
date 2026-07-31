@@ -52,7 +52,7 @@ class _MePatch(_BaseModel):
 from schemas import (
     AuthIn, TelegramMiniAppAuthIn, ChannelIn, ChannelPatch, SourceIn,
     AnalyzeIn, AnalyzeStyleOnly, GenerateFormatIn, PostIn,
-    PostPatch, ScheduleIn, BuyIn,
+    PostPatch, ScheduleIn, BuyIn, UpgradeIn,
 )
 
 logging.basicConfig(
@@ -1429,7 +1429,12 @@ def get_subscription(user: User = Depends(current_user)):
             "status": sub.status,
             "package_id": sub.package_id,
             "title": pkg.get("title", sub.package_id),
-            "rub": pkg.get("rub"),
+            # sub.price_rub -- зафиксированная цена подписчика (п.3 оферты),
+            # а НЕ текущая цена тарифа из конфига. Раньше здесь стояло
+            # pkg.get("rub") -- если цены поднимутся, кабинет показывал бы
+            # подписчику чужую (новую) цену вместо той, по которой он
+            # оформился, хотя списание всё равно шло бы по price_rub.
+            "rub": sub.price_rub or pkg.get("rub"),
             "period_days": config.SUBSCRIPTION_PERIOD_DAYS,
             "next_charge_at": sub.next_charge_at.isoformat() + "Z" if sub.next_charge_at else None,
             "last_error": sub.last_error,
@@ -1474,6 +1479,126 @@ def cancel_subscription(user: User = Depends(current_user)):
             f"сохранённый способ оплаты отвязан"
         )
     return {"ok": True}
+
+
+@app.post("/api/subscription/upgrade")
+async def upgrade_subscription(data: UpgradeIn, user: User = Depends(current_user)):
+    """
+    Смена тарифа на более дорогой, с перерасчётом по неизрасходованному остатку.
+
+    Решение владельца 31.07: понизить тариф самому нельзя вообще -- кто хочет
+    более простой тариф, отменяет подписку (эта опция уже есть) и оформляет
+    заново. Так проще для пользователя (нечего объяснять) и без риска
+    случайного возврата денег кодом.
+
+    Перерасчёт -- по НЕИЗРАСХОДОВАННЫМ ТОКЕНАМ текущего тарифа, а не по дням:
+    остаток = token_balance / сколько токенов давал текущий тариф (не больше
+    100% -- если баланс больше за счёт рефералов или прошлых тарифов, лишнее
+    не возвращаем). Эта доля от уже уплаченной цены (`sub.price_rub`, а НЕ
+    текущей цены из конфига -- п.3 оферты про фиксацию цены) вычитается из
+    цены нового тарифа.
+
+    Списание -- сразу, по уже сохранённой карте (`sub.payment_method_id`),
+    без редиректа: то же самое, чем `charge_due_subscriptions` продлевает
+    подписку каждый период, только вне расписания. Именно поэтому апгрейд
+    недоступен без сохранённого способа оплаты (нечем списать без участия
+    человека) -- предлагаем отменить и оформить заново вместо того, чтобы
+    городить редирект-путь ради редкого случая.
+
+    period_no/last_period_key планового автосписания НЕ трогаем: апгрейд —
+    отдельный платёж вне обычного цикла (свой label/idempotence_key), поэтому
+    следующее плановое продление само пойдёт по расписанию без коллизий.
+    """
+    if not config.SUBSCRIPTION_ENABLED:
+        raise HTTPException(400, "Смена тарифа доступна только с активной подпиской")
+
+    target_pkg = config.package_by_id(data.package_id)
+    if not target_pkg:
+        raise HTTPException(400, "Тариф не найден")
+
+    from database import Subscription
+    with session() as s:
+        sub = s.exec(select(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(["active", "suspended"]),
+        )).first()
+        if not sub:
+            raise HTTPException(400, "Активной подписки нет — выберите тариф обычной покупкой")
+        if not sub.payment_method_id:
+            raise HTTPException(
+                400,
+                "Нет привязанного способа оплаты — сменить тариф автоматически нечем. "
+                "Отмените подписку и оформите новый тариф заново.",
+            )
+        if target_pkg["rub"] <= sub.price_rub:
+            raise HTTPException(
+                400,
+                "Сменить можно только на тариф дороже текущего. Если хотите тариф проще — "
+                "отмените подписку в этом же разделе.",
+            )
+
+        current_pkg = config.package_by_id(sub.package_id) or {}
+        current_tokens = current_pkg.get("tokens", 0)
+        u = s.get(User, user.id)
+        unused_fraction = min(1.0, max(0.0, u.token_balance / current_tokens)) if current_tokens else 0.0
+        credit_rub = round(sub.price_rub * unused_fraction)
+        charge_rub = max(0, target_pkg["rub"] - credit_rub)
+
+        sub_id = sub.id
+        payment_method_id = sub.payment_method_id
+        user_email = u.email
+        # Идемпотентный, но привязанный к КОНКРЕТНОМУ переходу (откуда, за
+        # сколько было оплачено, куда) -- случайный повторный клик до ответа
+        # сервера сойдётся в тот же ключ и ЮKassa не спишет дважды; а вот
+        # апгрейд на тот же тариф ПОСЛЕ уже свершившегося перехода получит
+        # другой sub.price_rub на входе и упадёт раньше, на проверке выше.
+        idempotence_key = f"upgrade-{sub_id}-{sub.package_id}-{sub.price_rub}-to-{data.package_id}"
+        label = f"u{user.id}-upgrade-{data.package_id}-{secrets.token_hex(6)}"
+
+    charged = charge_rub
+    yk_payment = {}
+    if charge_rub > 0:
+        try:
+            yk_payment = await billing.charge_recurring(
+                payment_method_id=payment_method_id,
+                amount_rub=charge_rub,
+                description=f"Автопост: смена тарифа на «{target_pkg['title']}» (перерасчёт остатка)",
+                user_id=user.id,
+                package_id=data.package_id,
+                label=label,
+                idempotence_key=idempotence_key,
+                user_email=user_email,
+            )
+        except billing.YooKassaError as exc:
+            raise HTTPException(400, f"Не удалось списать оплату: {exc}")
+        if not (yk_payment.get("status") == "succeeded" and yk_payment.get("paid")):
+            raise HTTPException(400, "Платёж не подтверждён ЮKassa. Попробуйте ещё раз через минуту.")
+
+    now = datetime.utcnow()
+    with session() as s:
+        sub = s.get(Subscription, sub_id)
+        u = s.get(User, user.id)
+        if not sub or not u:
+            raise HTTPException(404, "Подписка не найдена")
+        s.add(Payment(
+            user_id=user.id, package_id=data.package_id, label=label,
+            rub=charged, tokens=target_pkg["tokens"], status="paid",
+            operation_id=yk_payment.get("id", ""),
+        ))
+        u.token_balance += target_pkg["tokens"]
+        sub.package_id = data.package_id
+        sub.price_rub = target_pkg["rub"]
+        sub.next_charge_at = now + timedelta(days=config.SUBSCRIPTION_PERIOD_DAYS)
+        sub.status = "active"
+        sub.fail_count = 0
+        sub.last_error = ""
+        s.add(u); s.add(sub); s.commit()
+
+    logger.info(
+        "Апгрейд подписки: пользователь %s -> %s, списано %s ₽ (кредит %s ₽)",
+        user.id, data.package_id, charged, credit_rub,
+    )
+    return {"ok": True, "package_id": data.package_id, "charged_rub": charged, "credit_rub": credit_rub}
 
 
 def _activate_subscription(s, pay: Payment, yk_payment: dict) -> None:

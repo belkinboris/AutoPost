@@ -3119,10 +3119,10 @@ async function renderBilling(){
     App._subscription=r.subscription; App._paymentMethod=r.payment_method||null;
   }catch(_){ App._subscription=null; App._paymentMethod=null; }
   const plans=[
-    {id:"p1",name:"Старт",price:490,regular:990,channels:1,postsMin:15,postsMax:30},
-    {id:"p2",name:"Про",price:990,regular:1990,channels:3,postsMin:30,postsMax:60,popular:true},
-    {id:"p3",name:"Бизнес",price:2490,regular:4990,channels:10,postsMin:75,postsMax:150},
-    {id:"p4",name:"Агентство",price:4990,regular:9990,channels:0,postsMin:150,postsMax:300},
+    {id:"p1",name:"Старт",price:490,regular:990,channels:1,postsMin:15,postsMax:30,tokens:600000},
+    {id:"p2",name:"Про",price:990,regular:1990,channels:3,postsMin:30,postsMax:60,popular:true,tokens:1200000},
+    {id:"p3",name:"Бизнес",price:2490,regular:4990,channels:10,postsMin:75,postsMax:150,tokens:3000000},
+    {id:"p4",name:"Агентство",price:4990,regular:9990,channels:0,postsMin:150,postsMax:300,tokens:6000000},
   ];
   const sub=App._subscription||null;
   // Найдено владельцем 31.07: у кого уже есть тариф, тому не нужны во весь
@@ -3137,6 +3137,16 @@ async function renderBilling(){
     if(match) currentPlanId=match.id;
   }
   const hasPlan=!!currentPlanId;
+  const currentPlan=plans.find(p=>p.id===currentPlanId)||null;
+  // Решение владельца 31.07: даунгрейд запрещён полностью (кто хочет тариф
+  // проще -- отменяет подписку, это уже есть выше). Апгрейд стоит дешевле
+  // полной цены на долю неизрасходованного остатка ТЕКУЩЕГО тарифа --
+  // ровно та же формула, что и на сервере (см. /api/subscription/upgrade в
+  // main.py): здесь только превью для красивой цены на кнопке, реальную
+  // сумму сервер всё равно считает заново сам, клиенту в этом не доверяет.
+  const currentPriceRub=sub?(sub.rub||0):(currentPlan?.price||0);
+  const currentTokens=currentPlan?.tokens||0;
+  const hasCard=!!App._paymentMethod;
   $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap">
     <div class="page-head"><h1>Тарифы</h1>
       <p>Осталось <b>${Math.floor((App.user?.token_balance||0)/40000)}–${Math.floor((App.user?.token_balance||0)/20000)}</b> постов.<br>
@@ -3154,18 +3164,41 @@ async function renderBilling(){
     <div id="plansGrid" class="grid grid-2 ${hasPlan?"hidden":""}" style="margin-bottom:16px">
       ${plans.map(p=>{
         const isCurrent=p.id===currentPlanId;
+        const isDowngrade=!!sub && !isCurrent && p.price<currentPriceRub;
+        const isUpgrade=!!sub && !isCurrent && p.price>currentPriceRub;
+        let upgradePrice=null, creditRub=0;
+        if(isUpgrade){
+          const unusedFraction=currentTokens>0?Math.min(1,(App.user?.token_balance||0)/currentTokens):0;
+          creditRub=Math.round(currentPriceRub*unusedFraction);
+          upgradePrice=Math.max(0,p.price-creditRub);
+        }
+        const priceHtml=(isUpgrade && creditRub>0)
+          ?`<div class="p-regular" style="text-decoration:line-through">${_rub(p.price)} ₽</div>
+            <div class="p-price" style="font-size:24px">${_rub(upgradePrice)} ₽</div>`
+          :`${p.regular?`<div class="p-regular">потом ${_rub(p.regular)} ₽</div>`:""}
+            <div class="p-price" style="font-size:24px">${_rub(p.price)}\u00A0₽${App.cfg?.subscription_enabled?"/мес":""}</div>`;
+        let actionHtml;
+        if(isCurrent){
+          actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Уже подключён</div>`;
+        } else if(isDowngrade){
+          actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Тариф ниже вашего — чтобы перейти, отмените текущую подписку выше</div>`;
+        } else if(isUpgrade && !hasCard){
+          actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Нужен сохранённый способ оплаты — отмените подписку и оформите новый тариф заново</div>`;
+        } else if(isUpgrade){
+          actionHtml=`<button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="upgradePlan('${p.id}')">Перейти на «${esc(p.name)}»</button>`
+            +(creditRub>0?`<div class="hint" style="text-align:center;margin-top:6px">Цена снижена — учтён неизрасходованный остаток тарифа «${esc(currentPlan?.name||"")}»</div>`:"");
+        } else {
+          actionHtml=`<button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>`;
+        }
         return `<div class="price-card" style="position:relative;${(p.popular&&!isCurrent)?"border-color:var(--accent)":""}${isCurrent?"border-color:var(--green,#2e7d32)":""}">
         ${isCurrent?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--green,#2e7d32);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Ваш тариф</div>`
           :p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
         <div class="p-name">${p.name}</div>
-        ${p.regular?`<div class="p-regular">потом ${_rub(p.regular)} ₽</div>`:""}
-        <div class="p-price" style="font-size:24px">${_rub(p.price)}\u00A0₽${App.cfg?.subscription_enabled?"/мес":""}</div>
+        ${priceHtml}
         <div class="p-tokens" style="line-height:1.8">
           📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${_plural(p.channels,"канал","канала","каналов")}`}<br>
           ✦ ${p.postsMin}–${p.postsMax} постов${App.cfg?.subscription_enabled?"/мес":""}</div>
-        ${isCurrent
-          ?`<div class="hint" style="text-align:center;margin-top:8px">Уже подключён</div>`
-          :`<button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>`}
+        ${actionHtml}
       </div>`;
       }).join("")}
     </div>
@@ -3409,6 +3442,38 @@ async function buy(pid){
     toast(e&&e.message?e.message:"Ошибка запроса","err");
   }
 }
+
+let _upgradeInFlight=false;
+
+// Смена тарифа на более дорогой -- списывается СРАЗУ по уже сохранённой
+// карте (см. POST /subscription/upgrade), без редиректа на ЮKassa. Сумму
+// на кнопке считаем здесь только для превью -- сколько реально спишут,
+// сервер решает заново сам по свежим данным, клиентскому числу не доверяет.
+async function upgradePlan(pid){
+  if(_upgradeInFlight) return;
+  const plan=(App.cfg?.packages||[]).find(p=>p.id===pid);
+  const title=plan?.title||pid;
+  if(!confirm(
+    `Перейти на тариф «${title}»?\n\n`+
+    `Спишем доплату сейчас по сохранённой карте (неизрасходованный остаток `+
+    `текущего тарифа уже учтён в цене). Дальше подписка продлевается по `+
+    `полной цене «${title}».`
+  )) return;
+  _upgradeInFlight=true;
+  logProductEvent("subscription_upgrade_started", pid);
+  try{
+    const r=await api("POST","/subscription/upgrade",{package_id:pid});
+    trackGoal("subscription_upgraded",{package_id:pid,charged_rub:r.charged_rub,credit_rub:r.credit_rub});
+    toast(`Тариф изменён — списано ${_rub(r.charged_rub)} ₽`,"ok");
+    renderBilling();
+  }catch(e){
+    logProductEvent("subscription_upgrade_failed", pid);
+    toast(e&&e.message?e.message:"Не удалось сменить тариф","err");
+  }finally{
+    _upgradeInFlight=false;
+  }
+}
+
 async function deleteAccount(){
   if(!confirm("Удалить аккаунт?\n\nЭто удалит все каналы, посты и данные.")) return;
   if(prompt("Введите DELETE:")!=="DELETE") return toast("Отменено");
