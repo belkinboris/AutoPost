@@ -32,8 +32,28 @@ async function renderNewChannelRouter(){
   // на полноценную форму с настройками, не на упрощённый онбординг.
   let chans=[];
   try{ chans = await api("GET","/channels"); }catch(_){}
-  if(chans.length>0) return renderNewChannelSettings();
-  return renderQuickStart();
+  if(chans.length===0) return renderQuickStart();
+
+  // Найдено владельцем 31.07: лимит каналов раньше проверялся только на
+  // сервере, ПОСЛЕ того как человек заполнял всю форму (название, тема,
+  // username) и жал "Создать канал" — обидно тратить время впустую, если
+  // тариф всё равно не позволит. Проверяем здесь же, до формы.
+  await refreshUser();
+  const limit=App.user?.channel_limit ?? 0;
+  if(limit>0 && chans.length>=limit) return renderChannelLimitReached(chans.length, limit);
+  return renderNewChannelSettings();
+}
+
+function renderChannelLimitReached(count, limit){
+  $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap" style="max-width:480px;text-align:center;margin-top:60px">
+    <div style="font-size:32px;margin-bottom:12px">📺</div>
+    <h2>Каналов на тарифе больше нет</h2>
+    <p style="color:var(--text-dim);margin:12px 0 20px">
+      На вашем тарифе доступно ${limit} ${_plural(limit,"канал","канала","каналов")}, а у вас уже ${count}.
+      Чтобы добавить ещё один, выберите тариф побольше.
+    </p>
+    <button class="btn" style="width:100%;justify-content:center" onclick="go('billing')">Перейти к тарифам</button>
+  </div>`;
 }
 
 // AUTH

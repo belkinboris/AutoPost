@@ -29,6 +29,32 @@ const $ = id => document.getElementById(id);
 const esc = s => (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":'&#39;'}[c]));
 const fmt = n => (n||0).toLocaleString("ru-RU");
 
+// Свой диалог подтверждения вместо window.confirm(). Причина не только
+// косметика: у нативного confirm() кнопки "OK"/"Cancel" всегда на английском
+// и их нельзя переименовать — для решений о деньгах (смена тарифа, возврат)
+// владелец 31.07 попросил по-русски и в стиле приложения. extra — необязательный
+// HTML-блок под текстом (например ссылка «Изменить способ оплаты»).
+function customConfirm(title, message, {confirmLabel="Подтвердить", cancelLabel="Отмена", extra=""}={}){
+  return new Promise(resolve=>{
+    const wrap=document.createElement("div");
+    wrap.style.cssText="position:fixed;inset:0;background:rgba(23,27,32,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px";
+    wrap.innerHTML=`<div class="card" style="max-width:380px;width:100%;padding:20px;margin:0">
+      <div style="font-size:16px;font-weight:600;margin-bottom:8px">${esc(title)}</div>
+      <div style="font-size:14px;color:var(--text-dim);line-height:1.6;white-space:pre-line">${esc(message)}</div>
+      ${extra}
+      <div style="display:flex;gap:8px;margin-top:18px">
+        <button class="btn-outline btn-sm" id="cc_cancel" style="flex:1;justify-content:center">${esc(cancelLabel)}</button>
+        <button class="btn btn-sm" id="cc_ok" style="flex:1;justify-content:center">${esc(confirmLabel)}</button>
+      </div>
+    </div>`;
+    document.body.appendChild(wrap);
+    const done=result=>{ wrap.remove(); resolve(result); };
+    wrap.querySelector("#cc_cancel").onclick=()=>done(false);
+    wrap.querySelector("#cc_ok").onclick=()=>done(true);
+    wrap.onclick=e=>{ if(e.target===wrap) done(false); };
+  });
+}
+
 function trackGoal(goal, params={}){
   try{
     if(window.ym && window.YM_COUNTER_ID){

@@ -49,7 +49,7 @@ async function renderBilling(){
       обычных.${App.cfg?.subscription_enabled?" Цена, по которой вы подписались, за вами сохранится.":""}
     </div>`:""}
     ${hasPlan?`<div style="text-align:center;margin-bottom:16px">
-      <button class="btn-outline btn-sm" onclick="togglePlansGrid()" id="plans_toggle_btn">Показать другие тарифы</button>
+      <button class="btn-outline btn-sm" onclick="togglePlansGrid()" id="plans_toggle_btn">Показать все тарифы</button>
     </div>`:""}
     <div id="plansGrid" class="grid grid-2 ${hasPlan?"hidden":""}" style="margin-bottom:16px">
       ${plans.map(p=>{
@@ -69,7 +69,17 @@ async function renderBilling(){
             <div class="p-price" style="font-size:24px">${_rub(p.price)}\u00A0₽${App.cfg?.subscription_enabled?"/мес":""}</div>`;
         let actionHtml;
         if(isCurrent){
-          actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Уже подключён</div>`;
+          // Кнопка возврата — только на карточке текущего тарифа, только
+          // пока условия из static/legal/refund.html реально выполняются
+          // (см. /api/subscription: refund_eligible/refund_reason). Владелец
+          // 31.07: основной способ возврата — эта кнопка, а не письмо,
+          // которое можно не увидеть вовремя.
+          const refundHtml=sub
+            ?(sub.refund_eligible
+              ?`<button class="btn-outline btn-sm" style="width:100%;justify-content:center;margin-top:8px;color:var(--red,#c0392b);border-color:var(--red,#c0392b)" onclick="refundSubscription()">Вернуть ${_rub(sub.refund_amount_rub||0)} ₽ и отменить</button>`
+              :`<div class="hint" style="text-align:center;margin-top:8px">Возврат недоступен: ${esc(sub.refund_reason||"")}</div>`)
+            :"";
+          actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Уже подключён</div>${refundHtml}`;
         } else if(isDowngrade){
           actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Тариф ниже вашего — чтобы перейти, отмените текущую подписку выше</div>`;
         } else if(isUpgrade && !hasCard){
@@ -160,7 +170,7 @@ function togglePlansGrid(){
   if(!grid) return;
   const hidden=grid.classList.contains("hidden");
   grid.classList.toggle("hidden",!hidden);
-  if(btn) btn.textContent=hidden?"Скрыть тарифы":"Показать другие тарифы";
+  if(btn) btn.textContent=hidden?"Скрыть тарифы":"Показать все тарифы";
 }
 
 function togglePayHistory(){
@@ -296,6 +306,38 @@ async function cancelSubscription(){
   }
 }
 
+let _refundInFlight=false;
+
+// Самообслуживаемый возврат (POST /subscription/refund) вместо письма на
+// почту — владелец 31.07 может не увидеть письмо вовремя. Условия (3 дня,
+// токены не тронуты) проверяет сервер заново, кнопка вообще не показывается,
+// если /api/subscription уже сказал refund_eligible=false.
+async function refundSubscription(){
+  if(_refundInFlight) return;
+  const sub=App._subscription;
+  if(!sub) return;
+  const ok=await customConfirm(
+    "Вернуть деньги и отменить подписку?",
+    `Вернём ${_rub(sub.refund_amount_rub||0)} ₽ на карту, с которой была оплата, и сразу отменим `+
+    `подписку — отменить этот возврат будет нельзя.`,
+    {confirmLabel:"Вернуть и отменить", cancelLabel:"Передумал(а)"}
+  );
+  if(!ok) return;
+  _refundInFlight=true;
+  logProductEvent("subscription_refund_started");
+  try{
+    const r=await api("POST","/subscription/refund");
+    logProductEvent("subscription_refunded");
+    toast(`Возврат оформлен — ${_rub(r.refunded_rub)} ₽`,"ok");
+    renderBilling();
+  }catch(e){
+    logProductEvent("subscription_refund_failed");
+    toast(e&&e.message?e.message:"Не удалось оформить возврат","err");
+  }finally{
+    _refundInFlight=false;
+  }
+}
+
 async function buy(pid){
   logProductEvent("payment_cta_clicked", pid);
   // Регулярное списание обязано быть раскрыто ДО оплаты, явно и своими
@@ -343,12 +385,21 @@ async function upgradePlan(pid){
   if(_upgradeInFlight) return;
   const plan=(App.cfg?.packages||[]).find(p=>p.id===pid);
   const title=plan?.title||pid;
-  if(!confirm(
-    `Перейти на тариф «${title}»?\n\n`+
+  // Свой диалог вместо window.confirm() — у нативного кнопки только на
+  // английском (владелец 31.07). Выбор способа оплаты именно для ЭТОЙ
+  // доплаты (например через СБП вместо привязанной карты) — отдельная,
+  // более сложная задача (нужен redirect-платёж на неполную сумму), пока не
+  // делали — вместо этого прямо говорим, каким способом спишется, и что
+  // делать, если хочется другим.
+  const ok=await customConfirm(
+    `Перейти на тариф «${title}»?`,
     `Спишем доплату сейчас по сохранённой карте (неизрасходованный остаток `+
     `текущего тарифа уже учтён в цене). Дальше подписка продлевается по `+
-    `полной цене «${title}».`
-  )) return;
+    `полной цене «${title}».\n\n`+
+    `Хотите заплатить другим способом — сначала отмените подписку ниже и `+
+    `оформите тариф заново.`
+  );
+  if(!ok) return;
   _upgradeInFlight=true;
   logProductEvent("subscription_upgrade_started", pid);
   try{

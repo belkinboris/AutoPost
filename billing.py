@@ -21,6 +21,7 @@ import config
 logger = logging.getLogger(__name__)
 
 YOOKASSA_PAYMENTS_URL = "https://api.yookassa.ru/v3/payments"
+YOOKASSA_REFUNDS_URL = "https://api.yookassa.ru/v3/refunds"
 
 
 class YooKassaError(RuntimeError):
@@ -263,6 +264,46 @@ async def get_payment(payment_id: str) -> dict[str, Any]:
 
     if response.status_code >= 400:
         logger.warning("YooKassa get_payment error %s: %s", response.status_code, response.text)
+        raise YooKassaError(_extract_error_message(response))
+
+    return response.json()
+
+
+async def refund_payment(*, payment_operation_id: str, amount_rub: float, idempotence_key: str) -> dict[str, Any]:
+    """
+    Возврат по уже проведённому платежу (POST /v3/refunds).
+
+    idempotence_key обязателен и должен быть детерминированным (например,
+    "refund-{наш Payment.id}") -- та же причина, что и у charge_recurring:
+    повторный запрос (сеть оборвалась после отправки, но до ответа) должен
+    вернуть тот же возврат, а не создать второй.
+    """
+    if not is_configured():
+        raise YooKassaError("YooKassa не настроена")
+    if not payment_operation_id:
+        raise YooKassaError("Нет идентификатора платежа ЮKassa для возврата")
+    if not idempotence_key:
+        raise YooKassaError("Для возврата обязателен idempotence_key")
+
+    payload = {
+        "payment_id": payment_operation_id,
+        "amount": _amount(amount_rub),
+    }
+    headers = {
+        "Idempotence-Key": idempotence_key,
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        try:
+            response = await client.post(
+                YOOKASSA_REFUNDS_URL, auth=_auth(), headers=headers, json=payload,
+            )
+        except httpx.HTTPError as exc:
+            raise YooKassaError(f"Не удалось обратиться к YooKassa: {exc}") from exc
+
+    if response.status_code >= 400:
+        logger.warning("YooKassa refund_payment error %s: %s", response.status_code, response.text)
         raise YooKassaError(_extract_error_message(response))
 
     return response.json()

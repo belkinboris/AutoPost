@@ -149,6 +149,12 @@ SUBSCRIPTION_PERIOD_DAYS = int(os.getenv("SUBSCRIPTION_PERIOD_DAYS", "30"))
 SUBSCRIPTION_MAX_FAILS = int(os.getenv("SUBSCRIPTION_MAX_FAILS", "3"))
 # Пауза между повторными попытками списания после неудачи.
 SUBSCRIPTION_RETRY_HOURS = int(os.getenv("SUBSCRIPTION_RETRY_HOURS", "24"))
+
+# Окно самостоятельного возврата (см. static/legal/refund.html) -- три дня с
+# момента оплаты, если после неё не было сгенерировано ни одного поста.
+# Значение здесь и в тексте политики должны совпадать -- меняя одно, менять и
+# другое.
+REFUND_WINDOW_DAYS = int(os.getenv("REFUND_WINDOW_DAYS", "3"))
 try:
     TOKEN_PACKAGES = json.loads(os.getenv("TOKEN_PACKAGES", "")) or _DEFAULT_PACKAGES
 except Exception:

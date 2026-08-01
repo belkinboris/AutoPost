@@ -629,7 +629,7 @@ def me(user: User = Depends(current_user)):
         # лимита каналов: шапка везде писала обезличенное "Тарифы", хотя
         # человек уже оплатил -- негде было даже увидеть, какой тариф у него
         # активен, не заходя специально в раздел оплаты.
-        _, plan_title = _channel_limit_with_plan(s, user.id)
+        channel_limit, plan_title = _channel_limit_with_plan(s, user.id)
     return {
         "id": user.id,
         "email": user.email,
@@ -637,6 +637,10 @@ def me(user: User = Depends(current_user)):
         "is_admin": user.is_admin,
         "ref_code": user.ref_code,
         "referrals_count": count,
+        # 0 -- без лимита (см. _channel_limit_with_plan). Нужен фронту, чтобы
+        # предупредить о лимите ДО формы нового канала, а не после того как
+        # человек её заполнил и нажал "Создать" (владелец 31.07).
+        "channel_limit": channel_limit,
         "tg_chat_id": user.tg_chat_id,
         "notify_published": user.notify_published,
         "notify_low_tokens": user.notify_low_tokens,
@@ -982,8 +986,17 @@ async def verify_channel(channel_id: int, user: User = Depends(current_user)):
 @app.post("/api/channels/{channel_id}/generate")
 async def generate_channel(channel_id: int, data: PostIn = PostIn(), user: User = Depends(current_user)):
     with session() as s:
-        _own_channel(s, channel_id, user)
-    result = await tasks.generate_for_channel(channel_id, topic=data.topic, force_pending=True)
+        ch = _own_channel(s, channel_id, user)
+        auto_publish = ch.auto_publish
+    # Найдено владельцем 31.07: force_pending=True стояло безусловно -- нажатие
+    # "Написать пост сейчас" на канале с включённым автопилотом создавало пост
+    # со статусом "Ждёт вашего решения ... сам не опубликуется", хотя весь
+    # смысл автопилота в том, что решение принимать не нужно. Теперь ручная
+    # генерация ведёт себя как канал обещает: автопилот публикует сразу же
+    # (та же ветка, что и у плановой генерации по расписанию), подтверждение
+    # остаётся только там, где оно и должно быть -- в режиме "публикация
+    # после подтверждения".
+    result = await tasks.generate_for_channel(channel_id, topic=data.topic, force_pending=not auto_publish)
     if not result["ok"]:
         raise HTTPException(400, result["message"])
     return result
@@ -1421,6 +1434,39 @@ async def payments(user: User = Depends(current_user)):
         return [p.model_dump() for p in ps]
 
 
+def _find_refundable_payment(s, user_id: int) -> tuple[Payment | None, str | None]:
+    """
+    Последний оплаченный платёж пользователя и причина, по которой его нельзя
+    вернуть автоматически (None -- можно).
+
+    Условия -- те же три дня и "токены не использовались", что написаны в
+    static/legal/refund.html, только проверяются кодом, а не человеком на
+    слово. "Использовались" проверяем буквально по документу: появился ли
+    после оплаты хоть один пост (Post.created_at > paid_at) -- не пытаемся
+    точно приписать конкретные токены конкретной оплате (баланс общий,
+    пополняется из нескольких источников), это ровно то же упрощение, что и
+    в перерасчёте при апгрейде тарифа.
+    """
+    pay = s.exec(
+        select(Payment).where(Payment.user_id == user_id, Payment.status == "paid")
+        .order_by(Payment.created_at.desc())
+    ).first()
+    if not pay:
+        return None, "Оплаченных платежей нет"
+    if not pay.paid_at:
+        return pay, "Платёж ещё не подтверждён"
+    if datetime.utcnow() - pay.paid_at > timedelta(days=config.REFUND_WINDOW_DAYS):
+        return pay, f"С момента оплаты прошло больше {config.REFUND_WINDOW_DAYS} дней"
+    used = s.exec(
+        select(Post).where(Post.user_id == user_id, Post.created_at > pay.paid_at)
+    ).first()
+    if used:
+        return pay, "После оплаты уже был создан пост"
+    if not pay.operation_id:
+        return pay, "У платежа нет номера ЮKassa"
+    return pay, None
+
+
 @app.get("/api/subscription")
 def get_subscription(user: User = Depends(current_user)):
     """Текущая подписка пользователя (или none, если её нет)."""
@@ -1435,6 +1481,7 @@ def get_subscription(user: User = Depends(current_user)):
         if not sub:
             return {"subscription": None, "payment_method": None}
         pkg = config.package_by_id(sub.package_id) or {}
+        payment, refund_blocked_reason = _find_refundable_payment(s, user.id)
         return {"payment_method": ({
             "title": sub.payment_method_title or "Сохранённый способ оплаты",
         } if sub.payment_method_id else None), "subscription": {
@@ -1450,6 +1497,10 @@ def get_subscription(user: User = Depends(current_user)):
             "period_days": config.SUBSCRIPTION_PERIOD_DAYS,
             "next_charge_at": sub.next_charge_at.isoformat() + "Z" if sub.next_charge_at else None,
             "last_error": sub.last_error,
+            "refund_eligible": bool(payment and not refund_blocked_reason),
+            "refund_reason": refund_blocked_reason,
+            "refund_amount_rub": payment.rub if (payment and not refund_blocked_reason) else None,
+            "refund_window_days": config.REFUND_WINDOW_DAYS,
         }}
 
 
@@ -1491,6 +1542,77 @@ def cancel_subscription(user: User = Depends(current_user)):
             f"сохранённый способ оплаты отвязан"
         )
     return {"ok": True}
+
+
+@app.post("/api/subscription/refund")
+async def refund_subscription(user: User = Depends(current_user)):
+    """
+    Самообслуживаемый возврат последнего платежа + отмена подписки.
+
+    Решение владельца 31.07: основной способ возврата -- эта кнопка, а не
+    письмо на почту, потому что владелец может не увидеть письмо вовремя и
+    потом придётся спорить с человеком, который не уложился в обещанный день
+    ответа. Условия ровно те же, что в static/legal/refund.html (3 дня,
+    токены не тронуты) -- проверяет `_find_refundable_payment`, здесь же и
+    показывается причина отказа, если возврат недоступен.
+
+    Подписка гасится сразу же вместе с возвратом -- нельзя вернуть деньги за
+    период и продолжать им пользоваться.
+    """
+    from database import Subscription
+    with session() as s:
+        sub = s.exec(select(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(["active", "suspended"]),
+        )).first()
+        if not sub:
+            raise HTTPException(400, "Активной подписки нет")
+        payment, reason = _find_refundable_payment(s, user.id)
+        if not payment or reason:
+            raise HTTPException(400, reason or "Возврат недоступен")
+        payment_pk = payment.id
+        operation_id = payment.operation_id
+        rub = payment.rub
+        tokens = payment.tokens
+        sub_id = sub.id
+
+    idempotence_key = f"refund-{payment_pk}"
+    try:
+        result = await billing.refund_payment(
+            payment_operation_id=operation_id, amount_rub=rub, idempotence_key=idempotence_key,
+        )
+    except billing.YooKassaError as exc:
+        raise HTTPException(400, f"Не удалось оформить возврат: {exc}")
+
+    if result.get("status") not in ("succeeded", "pending"):
+        raise HTTPException(400, "ЮKassa не подтвердила возврат. Попробуйте ещё раз позже или напишите в поддержку.")
+
+    with session() as s:
+        pay = s.get(Payment, payment_pk)
+        if pay:
+            pay.status = "refunded"
+            s.add(pay)
+        u = s.get(User, user.id)
+        if u:
+            # Общий баланс, не привязка к конкретной оплате (та же оговорка,
+            # что и в перерасчёте апгрейда) -- отнимаем ровно столько, сколько
+            # эта оплата дала, но не уходим в минус.
+            u.token_balance = max(0, u.token_balance - tokens)
+            s.add(u)
+        sub = s.get(Subscription, sub_id)
+        if sub:
+            sub.status = "cancelled"
+            sub.cancelled_at = datetime.utcnow()
+            sub.next_charge_at = None
+            sub.payment_method_id = ""
+            s.add(sub)
+        s.commit()
+
+    logger.info(
+        "Возврат: пользователь %s, платёж %s, %s ₽, подписка отменена",
+        user.id, payment_pk, rub,
+    )
+    return {"ok": True, "refunded_rub": rub}
 
 
 @app.post("/api/subscription/upgrade")
