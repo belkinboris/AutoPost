@@ -207,11 +207,19 @@ async def charge_recurring(
 def describe_payment_method(payment: dict[str, Any]) -> str:
     """
     Человекочитаемое описание сохранённого способа оплаты для кабинета:
-    «Банковская карта •••• 4444», «SberPay» и т.п.
+    «Банковская карта •••• 4444», «СБП», «SberPay» и т.п.
 
     Полных реквизитов карты YooKassa нам не отдаёт и мы их не храним -- только
     последние 4 цифры из ответа, чтобы пользователь понимал, какую именно карту
     он отвязывает.
+
+    create_payment() не ограничивает payment_method_data конкретным типом --
+    страница оплаты YooKassa сама показывает все методы, подключённые магазину
+    (карта, СБП, SberPay...), и save_payment_method относится к тому, что
+    выберет плательщик. Поэтому extract_saved_method_id/charge_recurring уже
+    работают с любым типом одинаково (id -- он и есть id); здесь только явно
+    называем СБП по имени, а не молчаливым "Сохранённый способ оплаты", раз
+    31.07 подключили рекуррент и для него.
     """
     method = payment.get("payment_method") or {}
     title = method.get("title") or ""
@@ -219,6 +227,8 @@ def describe_payment_method(payment: dict[str, Any]) -> str:
     last4 = card.get("last4") or ""
     if last4:
         return f"Банковская карта •••• {last4}"
+    if method.get("type") == "sbp":
+        return "СБП" + (f" ({title})" if title and title != "СБП" else "")
     if title:
         return str(title)
     return "Сохранённый способ оплаты"

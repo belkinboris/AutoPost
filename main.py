@@ -1339,6 +1339,7 @@ async def _sync_yookassa_pending_payments(user_id: int) -> None:
         ).all()
         items = [(p.id, p.operation_id) for p in pending if p.operation_id]
 
+    any_credited = False
     for local_payment_id, yookassa_payment_id in items:
         try:
             yk_payment = await billing.get_payment(yookassa_payment_id)
@@ -1397,6 +1398,17 @@ async def _sync_yookassa_pending_payments(user_id: int) -> None:
                     pay.user_id, pay.tokens,
                 )
                 _activate_subscription(s, pay, yk_payment)
+                any_credited = True
+
+    if any_credited:
+        # Вне сессии выше: генерация может занять секунды (вызов модели), и
+        # держать открытую сессию БД всё это время не нужно. См.
+        # tasks.resume_starved_channels -- почему это важнее, чем дождаться
+        # планового тика.
+        try:
+            await tasks.resume_starved_channels(user_id)
+        except Exception as e:
+            logger.warning(f"resume_starved_channels после sync-начисления: {e}")
 
 
 @app.get("/api/payments")
@@ -1598,6 +1610,10 @@ async def upgrade_subscription(data: UpgradeIn, user: User = Depends(current_use
         "Апгрейд подписки: пользователь %s -> %s, списано %s ₽ (кредит %s ₽)",
         user.id, data.package_id, charged, credit_rub,
     )
+    try:
+        await tasks.resume_starved_channels(user.id)
+    except Exception as e:
+        logger.warning(f"resume_starved_channels после апгрейда: {e}")
     return {"ok": True, "package_id": data.package_id, "charged_rub": charged, "credit_rub": credit_rub}
 
 
@@ -1840,6 +1856,17 @@ async def yookassa_notify(request: Request):
             s.commit()
             logger.info("Платёж YooKassa зачтён: пользователь %s +%s токенов", pay.user_id, pay.tokens)
             _activate_subscription(s, pay, yk_payment)
+            credited_user_id = pay.user_id
+        else:
+            credited_user_id = None
+
+    if credited_user_id:
+        # См. tasks.resume_starved_channels -- пробуем сдвинуть просроченные
+        # по расписанию каналы сразу, не дожидаясь планового тика.
+        try:
+            await tasks.resume_starved_channels(credited_user_id)
+        except Exception as e:
+            logger.warning(f"resume_starved_channels после webhook-начисления: {e}")
 
     return PlainTextResponse("OK", status_code=200)
 
