@@ -1258,6 +1258,50 @@ async def _generate_if_due(channel_id: int):
     await generate_for_channel(channel_id)
 
 
+async def resume_starved_channels(user_id: int):
+    """
+    После пополнения баланса (обычная оплата, апгрейд тарифа, ручное
+    начисление) пробуем сразу сдвинуть каналы, которые УЖЕ просрочили своё
+    расписание -- не дожидаясь ближайшего планового тика.
+
+    Найдено владельцем 31.07: пополнил баланс, проверил канал -- в очереди
+    всё ещё 0, хотя по расписанию пост давно должен был выйти. Генерация
+    молчаливо блокируется нулевым балансом (см. generate_for_channel), и до
+    этой правки ждать возобновления приходилось до ближайшего тика
+    планировщика -- а если тик по какой-то причине не подхватил канал вовремя,
+    то и дольше. Платёж -- достаточно весомое событие, чтобы не ждать.
+
+    Намеренно НЕ трогаем автопилот-каналы, которые ещё НЕ просрочили
+    расписание (`_is_due` не пройдена): пополнить баланс заранее, до того как
+    закончился текущий период, не должно вызвать внеочередной пост раньше
+    обещанного интервала -- это было бы хуже, чем просто подождать.
+    Резерв для режима подтверждения (`_refill_if_active`) трогаем всегда,
+    без проверки `_is_due` -- он и так вызывается на каждом тике безусловно
+    для всех каналов, здесь просто убираем ожидание тика.
+    """
+    now = datetime.utcnow()
+    with session() as s:
+        channels = s.exec(select(Channel).where(
+            Channel.user_id == user_id,
+            Channel.enabled == True,   # noqa
+            Channel.verified == True,  # noqa
+        )).all()
+        due_auto_ids = [c.id for c in channels if c.auto_publish and _is_due(c, now)]
+        manual_ids = [c.id for c in channels if not c.auto_publish]
+
+    for cid in due_auto_ids:
+        try:
+            await _generate_if_due(cid)
+        except Exception as e:
+            logger.warning(f"resume_starved_channels: канал {cid}: {e}")
+
+    for cid in manual_ids:
+        try:
+            await _refill_if_active(cid)
+        except Exception as e:
+            logger.warning(f"resume_starved_channels: резерв канала {cid}: {e}")
+
+
 async def charge_due_subscriptions():
     """
     Автосписание по подпискам, у которых наступила дата продления.

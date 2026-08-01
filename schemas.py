@@ -100,3 +100,7 @@ class ScheduleIn(BaseModel):
 
 class BuyIn(BaseModel):
     package_id: str
+
+
+class UpgradeIn(BaseModel):
+    package_id: str

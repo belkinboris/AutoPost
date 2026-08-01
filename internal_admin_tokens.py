@@ -35,6 +35,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from sqlmodel import select
 
+import tasks
 from database import session, User
 
 logger = logging.getLogger("autopost")
@@ -85,7 +86,7 @@ def user_balance(email: str, authorization: str | None = Header(default=None)):
 
 
 @router.post("/api/internal/grant-tokens")
-def grant_tokens(data: GrantTokensIn, authorization: str | None = Header(default=None)):
+async def grant_tokens(data: GrantTokensIn, authorization: str | None = Header(default=None)):
     _check_auth(authorization)
 
     if data.mode not in ("add", "set"):
@@ -120,6 +121,14 @@ def grant_tokens(data: GrantTokensIn, authorization: str | None = Header(default
         "[grant-tokens] email=%s user_id=%s mode=%s delta=%s balance %s -> %s reason=«%s»",
         data.email, user_id, data.mode, data.tokens, before, after, data.reason,
     )
+
+    if after > before:
+        # См. tasks.resume_starved_channels -- то же самое "не ждать тика
+        # после пополнения", что и для обычной оплаты и апгрейда тарифа.
+        try:
+            await tasks.resume_starved_channels(user_id)
+        except Exception as e:
+            logger.warning(f"resume_starved_channels после grant-tokens: {e}")
 
     return {
         "ok": True,

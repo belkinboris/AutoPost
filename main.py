@@ -52,7 +52,7 @@ class _MePatch(_BaseModel):
 from schemas import (
     AuthIn, TelegramMiniAppAuthIn, ChannelIn, ChannelPatch, SourceIn,
     AnalyzeIn, AnalyzeStyleOnly, GenerateFormatIn, PostIn,
-    PostPatch, ScheduleIn, BuyIn,
+    PostPatch, ScheduleIn, BuyIn, UpgradeIn,
 )
 
 logging.basicConfig(
@@ -252,22 +252,38 @@ def _own_channel(s, channel_id: int, user: User) -> Channel:
 
 
 def _channel_limit(s, user_id: int) -> int:
-    """Сколько каналов разрешено пользователю. 0 -- без лимита («Агентство»).
+    """Сколько каналов разрешено пользователю. 0 -- без лимита («Агентство»)."""
+    return _channel_limit_with_plan(s, user_id)[0]
+
+
+def _channel_limit_with_plan(s, user_id: int) -> tuple[int, str | None]:
+    """Лимит каналов и название тарифа, который его даёт (None -- бесплатный).
 
     Признак оплаты тот же, что и у глубины очереди (`queue_target_for_user` в
     tasks.py): платёж со статусом "paid". Берём максимум по всем оплаченным
     пакетам, а не последний -- если человек купил «Бизнес», а потом добрал
     «Старт», отнимать у него уже оплаченные каналы нельзя.
+
+    Название тарифа нужно отдельно от лимита: «Старт» (490 ₽) и бесплатный
+    тариф дают одинаковый лимит в 1 канал, но сообщение об отказе не может
+    называть оплаченный тариф бесплатным -- владелец поймал это на себе 31.07.
     """
     paid = s.exec(
         select(Payment).where(Payment.user_id == user_id, Payment.status == "paid")
     ).all()
     if not paid:
-        return config.FREE_CHANNELS
+        return config.FREE_CHANNELS, None
     limits = [config.CHANNELS_BY_PACKAGE.get(p.package_id, config.FREE_CHANNELS) for p in paid]
     if any(limit == 0 for limit in limits):
-        return 0
-    return max(limits)
+        return 0, None  # без лимита -- уточнять тариф в сообщении не для чего
+    best = max(limits)
+    title = None
+    for p, lim in zip(paid, limits):
+        if lim == best:
+            pkg = config.package_by_id(p.package_id)
+            if pkg:
+                title = pkg["title"]
+    return best, title
 
 
 def _own_post(s, post_id: int, user: User) -> Post:
@@ -608,6 +624,12 @@ def me(user: User = Depends(current_user)):
     with session() as s:
         refs = s.exec(select(Referral).where(Referral.referrer_id == user.id)).all()
         count = len(refs)
+        # Название тарифа для шапки (topbar показывает её на КАЖДОЙ странице,
+        # не только на "Тарифах"). Найдено владельцем 31.07 вместе с багом
+        # лимита каналов: шапка везде писала обезличенное "Тарифы", хотя
+        # человек уже оплатил -- негде было даже увидеть, какой тариф у него
+        # активен, не заходя специально в раздел оплаты.
+        _, plan_title = _channel_limit_with_plan(s, user.id)
     return {
         "id": user.id,
         "email": user.email,
@@ -618,6 +640,7 @@ def me(user: User = Depends(current_user)):
         "tg_chat_id": user.tg_chat_id,
         "notify_published": user.notify_published,
         "notify_low_tokens": user.notify_low_tokens,
+        "plan_title": plan_title,
     }
 
 
@@ -767,22 +790,33 @@ def create_channel(data: ChannelIn, user: User = Depends(current_user)):
         # Уже созданные сверх лимита каналы не трогаем -- ограничение работает
         # только вперёд. Отнимать у людей то, чем они уже пользуются, из-за
         # нашей же недоделанной проверки нельзя.
-        limit = _channel_limit(s, user.id)
+        limit, plan_title = _channel_limit_with_plan(s, user.id)
         if limit:
             existing = len(s.exec(select(Channel).where(Channel.user_id == user.id)).all())
             if existing >= limit:
                 logger.info(
                     f"create_channel: отказ по лимиту тарифа, user_id={user.id} "
-                    f"каналов={existing} лимит={limit}"
+                    f"каналов={existing} лимит={limit} тариф={plan_title or 'бесплатный'}"
                 )
-                raise HTTPException(
-                    400,
-                    f"Больше каналов не добавить: на вашем тарифе их {limit}, "
-                    f"а у вас уже {existing}. Выберите тариф побольше в разделе «Тарифы»."
-                    if limit > 1 else
-                    f"На бесплатном тарифе доступен один канал, он у вас уже есть. "
-                    f"Чтобы вести несколько каналов, выберите тариф в разделе «Тарифы».",
-                )
+                if limit > 1:
+                    msg = (
+                        f"Больше каналов не добавить: на вашем тарифе их {limit}, "
+                        f"а у вас уже {existing}. Выберите тариф побольше в разделе «Тарифы»."
+                    )
+                elif plan_title:
+                    # Найдено владельцем 31.07: «Старт» и бесплатный тариф оба дают
+                    # 1 канал, а сообщение раньше не различало их и называло
+                    # оплаченный тариф бесплатным.
+                    msg = (
+                        f"На тарифе «{plan_title}» доступен 1 канал — он у вас уже есть. "
+                        f"Чтобы вести несколько каналов, выберите тариф выше в разделе «Тарифы»."
+                    )
+                else:
+                    msg = (
+                        f"На бесплатном тарифе доступен один канал, он у вас уже есть. "
+                        f"Чтобы вести несколько каналов, выберите тариф в разделе «Тарифы»."
+                    )
+                raise HTTPException(400, msg)
 
         ch = Channel(
             user_id=user.id,
@@ -866,16 +900,37 @@ def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depends(curr
 
 @app.delete("/api/channels/{channel_id}")
 def delete_channel(channel_id: int, user: User = Depends(current_user)):
-    from database import ChannelRule
+    from database import ChannelRule, PostApproval
     try:
         with session() as s:
             ch = _own_channel(s, channel_id, user)
+            # PostApproval -- FK и на post.id, и на channel.id (режим "публикация
+            # после подтверждения"). Найдено владельцем 31.07: удаление канала
+            # с хотя бы одним таймером подтверждения падало на FK-нарушении --
+            # ChannelRule/Source/Post чистились, а PostApproval нет. На Postgres
+            # это IntegrityError, пользователь видел общее "не удалось удалить
+            # канал, обновите страницу". Тот же класс бага, что уже трижды ловили
+            # в delete_account() (правило 3), только для другого эндпоинта.
+            #
+            # flush() после каждой партии обязателен: без явных relationship()
+            # между моделями SQLAlchemy не выстраивает DELETE-операторы одной
+            # транзакции в порядке зависимостей сам -- а SQLite проверяет FK
+            # немедленно на каждый оператор, а не в конце транзакции. Без
+            # flush() удаление падало даже ПОСЛЕ того как PostApproval стали
+            # чистить: DELETE FROM channel мог уйти раньше дочерних DELETE.
+            # Воспроизведено и проверено отдельным скриптом до правки.
+            for pa in s.exec(select(PostApproval).where(PostApproval.channel_id == channel_id)).all():
+                s.delete(pa)
+            s.flush()
             for src in s.exec(select(Source).where(Source.channel_id == channel_id)).all():
                 s.delete(src)
+            s.flush()
             for p in s.exec(select(Post).where(Post.channel_id == channel_id)).all():
                 s.delete(p)
+            s.flush()
             for r in s.exec(select(ChannelRule).where(ChannelRule.channel_id == channel_id)).all():
                 s.delete(r)
+            s.flush()
             s.delete(ch)
             s.commit()
     except HTTPException:
@@ -1284,6 +1339,7 @@ async def _sync_yookassa_pending_payments(user_id: int) -> None:
         ).all()
         items = [(p.id, p.operation_id) for p in pending if p.operation_id]
 
+    any_credited = False
     for local_payment_id, yookassa_payment_id in items:
         try:
             yk_payment = await billing.get_payment(yookassa_payment_id)
@@ -1342,6 +1398,17 @@ async def _sync_yookassa_pending_payments(user_id: int) -> None:
                     pay.user_id, pay.tokens,
                 )
                 _activate_subscription(s, pay, yk_payment)
+                any_credited = True
+
+    if any_credited:
+        # Вне сессии выше: генерация может занять секунды (вызов модели), и
+        # держать открытую сессию БД всё это время не нужно. См.
+        # tasks.resume_starved_channels -- почему это важнее, чем дождаться
+        # планового тика.
+        try:
+            await tasks.resume_starved_channels(user_id)
+        except Exception as e:
+            logger.warning(f"resume_starved_channels после sync-начисления: {e}")
 
 
 @app.get("/api/payments")
@@ -1374,7 +1441,12 @@ def get_subscription(user: User = Depends(current_user)):
             "status": sub.status,
             "package_id": sub.package_id,
             "title": pkg.get("title", sub.package_id),
-            "rub": pkg.get("rub"),
+            # sub.price_rub -- зафиксированная цена подписчика (п.3 оферты),
+            # а НЕ текущая цена тарифа из конфига. Раньше здесь стояло
+            # pkg.get("rub") -- если цены поднимутся, кабинет показывал бы
+            # подписчику чужую (новую) цену вместо той, по которой он
+            # оформился, хотя списание всё равно шло бы по price_rub.
+            "rub": sub.price_rub or pkg.get("rub"),
             "period_days": config.SUBSCRIPTION_PERIOD_DAYS,
             "next_charge_at": sub.next_charge_at.isoformat() + "Z" if sub.next_charge_at else None,
             "last_error": sub.last_error,
@@ -1419,6 +1491,130 @@ def cancel_subscription(user: User = Depends(current_user)):
             f"сохранённый способ оплаты отвязан"
         )
     return {"ok": True}
+
+
+@app.post("/api/subscription/upgrade")
+async def upgrade_subscription(data: UpgradeIn, user: User = Depends(current_user)):
+    """
+    Смена тарифа на более дорогой, с перерасчётом по неизрасходованному остатку.
+
+    Решение владельца 31.07: понизить тариф самому нельзя вообще -- кто хочет
+    более простой тариф, отменяет подписку (эта опция уже есть) и оформляет
+    заново. Так проще для пользователя (нечего объяснять) и без риска
+    случайного возврата денег кодом.
+
+    Перерасчёт -- по НЕИЗРАСХОДОВАННЫМ ТОКЕНАМ текущего тарифа, а не по дням:
+    остаток = token_balance / сколько токенов давал текущий тариф (не больше
+    100% -- если баланс больше за счёт рефералов или прошлых тарифов, лишнее
+    не возвращаем). Эта доля от уже уплаченной цены (`sub.price_rub`, а НЕ
+    текущей цены из конфига -- п.3 оферты про фиксацию цены) вычитается из
+    цены нового тарифа.
+
+    Списание -- сразу, по уже сохранённой карте (`sub.payment_method_id`),
+    без редиректа: то же самое, чем `charge_due_subscriptions` продлевает
+    подписку каждый период, только вне расписания. Именно поэтому апгрейд
+    недоступен без сохранённого способа оплаты (нечем списать без участия
+    человека) -- предлагаем отменить и оформить заново вместо того, чтобы
+    городить редирект-путь ради редкого случая.
+
+    period_no/last_period_key планового автосписания НЕ трогаем: апгрейд —
+    отдельный платёж вне обычного цикла (свой label/idempotence_key), поэтому
+    следующее плановое продление само пойдёт по расписанию без коллизий.
+    """
+    if not config.SUBSCRIPTION_ENABLED:
+        raise HTTPException(400, "Смена тарифа доступна только с активной подпиской")
+
+    target_pkg = config.package_by_id(data.package_id)
+    if not target_pkg:
+        raise HTTPException(400, "Тариф не найден")
+
+    from database import Subscription
+    with session() as s:
+        sub = s.exec(select(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(["active", "suspended"]),
+        )).first()
+        if not sub:
+            raise HTTPException(400, "Активной подписки нет — выберите тариф обычной покупкой")
+        if not sub.payment_method_id:
+            raise HTTPException(
+                400,
+                "Нет привязанного способа оплаты — сменить тариф автоматически нечем. "
+                "Отмените подписку и оформите новый тариф заново.",
+            )
+        if target_pkg["rub"] <= sub.price_rub:
+            raise HTTPException(
+                400,
+                "Сменить можно только на тариф дороже текущего. Если хотите тариф проще — "
+                "отмените подписку в этом же разделе.",
+            )
+
+        current_pkg = config.package_by_id(sub.package_id) or {}
+        current_tokens = current_pkg.get("tokens", 0)
+        u = s.get(User, user.id)
+        unused_fraction = min(1.0, max(0.0, u.token_balance / current_tokens)) if current_tokens else 0.0
+        credit_rub = round(sub.price_rub * unused_fraction)
+        charge_rub = max(0, target_pkg["rub"] - credit_rub)
+
+        sub_id = sub.id
+        payment_method_id = sub.payment_method_id
+        user_email = u.email
+        # Идемпотентный, но привязанный к КОНКРЕТНОМУ переходу (откуда, за
+        # сколько было оплачено, куда) -- случайный повторный клик до ответа
+        # сервера сойдётся в тот же ключ и ЮKassa не спишет дважды; а вот
+        # апгрейд на тот же тариф ПОСЛЕ уже свершившегося перехода получит
+        # другой sub.price_rub на входе и упадёт раньше, на проверке выше.
+        idempotence_key = f"upgrade-{sub_id}-{sub.package_id}-{sub.price_rub}-to-{data.package_id}"
+        label = f"u{user.id}-upgrade-{data.package_id}-{secrets.token_hex(6)}"
+
+    charged = charge_rub
+    yk_payment = {}
+    if charge_rub > 0:
+        try:
+            yk_payment = await billing.charge_recurring(
+                payment_method_id=payment_method_id,
+                amount_rub=charge_rub,
+                description=f"Автопост: смена тарифа на «{target_pkg['title']}» (перерасчёт остатка)",
+                user_id=user.id,
+                package_id=data.package_id,
+                label=label,
+                idempotence_key=idempotence_key,
+                user_email=user_email,
+            )
+        except billing.YooKassaError as exc:
+            raise HTTPException(400, f"Не удалось списать оплату: {exc}")
+        if not (yk_payment.get("status") == "succeeded" and yk_payment.get("paid")):
+            raise HTTPException(400, "Платёж не подтверждён ЮKassa. Попробуйте ещё раз через минуту.")
+
+    now = datetime.utcnow()
+    with session() as s:
+        sub = s.get(Subscription, sub_id)
+        u = s.get(User, user.id)
+        if not sub or not u:
+            raise HTTPException(404, "Подписка не найдена")
+        s.add(Payment(
+            user_id=user.id, package_id=data.package_id, label=label,
+            rub=charged, tokens=target_pkg["tokens"], status="paid",
+            operation_id=yk_payment.get("id", ""),
+        ))
+        u.token_balance += target_pkg["tokens"]
+        sub.package_id = data.package_id
+        sub.price_rub = target_pkg["rub"]
+        sub.next_charge_at = now + timedelta(days=config.SUBSCRIPTION_PERIOD_DAYS)
+        sub.status = "active"
+        sub.fail_count = 0
+        sub.last_error = ""
+        s.add(u); s.add(sub); s.commit()
+
+    logger.info(
+        "Апгрейд подписки: пользователь %s -> %s, списано %s ₽ (кредит %s ₽)",
+        user.id, data.package_id, charged, credit_rub,
+    )
+    try:
+        await tasks.resume_starved_channels(user.id)
+    except Exception as e:
+        logger.warning(f"resume_starved_channels после апгрейда: {e}")
+    return {"ok": True, "package_id": data.package_id, "charged_rub": charged, "credit_rub": credit_rub}
 
 
 def _activate_subscription(s, pay: Payment, yk_payment: dict) -> None:
@@ -1660,6 +1856,17 @@ async def yookassa_notify(request: Request):
             s.commit()
             logger.info("Платёж YooKassa зачтён: пользователь %s +%s токенов", pay.user_id, pay.tokens)
             _activate_subscription(s, pay, yk_payment)
+            credited_user_id = pay.user_id
+        else:
+            credited_user_id = None
+
+    if credited_user_id:
+        # См. tasks.resume_starved_channels -- пробуем сдвинуть просроченные
+        # по расписанию каналы сразу, не дожидаясь планового тика.
+        try:
+            await tasks.resume_starved_channels(credited_user_id)
+        except Exception as e:
+            logger.warning(f"resume_starved_channels после webhook-начисления: {e}")
 
     return PlainTextResponse("OK", status_code=200)
 

@@ -37,6 +37,31 @@ function trackGoal(goal, params={}){
   }catch(_){}
 }
 
+// Отправляет цель "payment_success" в Метрику по каждому оплаченному платежу,
+// который ещё не отправляли (дедуп через localStorage — платёж не должен
+// засчитаться дважды). Найдено владельцем 31.07: реально это раньше вызывалось
+// ТОЛЬКО из раскрытия "Истории платежей" в настройках (см. renderBilling) —
+// случайное действие, которое почти никто не делает сразу после оплаты. Из-за
+// этого Яндекс.Директ не видел почти ни одной покупки: цель физически не
+// уходила в Метрику вовремя, хотя сама оплата проходила нормально. Теперь
+// вызывается сразу при возврате со страницы оплаты (см. boot()), а вызов из
+// истории платежей остаётся подстраховкой на случай, если платёж успел
+// подтвердиться в ЮKassa только уже после возврата пользователя.
+async function _reportPaidPayments(ps){
+  try{
+    const list = ps || await api("GET","/payments");
+    list.forEach(p=>{
+      if(p.status==="paid"){
+        const key="ym_paid_"+(p.id||p.label||p.created_at);
+        if(!localStorage.getItem(key)){
+          trackGoal("payment_success",{package_id:p.package_id||"",tokens:p.tokens||0,rub:p.rub||0});
+          localStorage.setItem(key,"1");
+        }
+      }
+    });
+  }catch(_){}
+}
+
 // ── CTA/Journey Diagnostics: захват lp_session + UTM из URL лендинга (Part 4) ──
 const _sentLandingEvents = new Set(); // дедуп в рамках одной загрузки страницы
 

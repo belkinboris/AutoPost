@@ -37,6 +37,31 @@ function trackGoal(goal, params={}){
   }catch(_){}
 }
 
+// Отправляет цель "payment_success" в Метрику по каждому оплаченному платежу,
+// который ещё не отправляли (дедуп через localStorage — платёж не должен
+// засчитаться дважды). Найдено владельцем 31.07: реально это раньше вызывалось
+// ТОЛЬКО из раскрытия "Истории платежей" в настройках (см. renderBilling) —
+// случайное действие, которое почти никто не делает сразу после оплаты. Из-за
+// этого Яндекс.Директ не видел почти ни одной покупки: цель физически не
+// уходила в Метрику вовремя, хотя сама оплата проходила нормально. Теперь
+// вызывается сразу при возврате со страницы оплаты (см. boot()), а вызов из
+// истории платежей остаётся подстраховкой на случай, если платёж успел
+// подтвердиться в ЮKassa только уже после возврата пользователя.
+async function _reportPaidPayments(ps){
+  try{
+    const list = ps || await api("GET","/payments");
+    list.forEach(p=>{
+      if(p.status==="paid"){
+        const key="ym_paid_"+(p.id||p.label||p.created_at);
+        if(!localStorage.getItem(key)){
+          trackGoal("payment_success",{package_id:p.package_id||"",tokens:p.tokens||0,rub:p.rub||0});
+          localStorage.setItem(key,"1");
+        }
+      }
+    });
+  }catch(_){}
+}
+
 // ── CTA/Journey Diagnostics: захват lp_session + UTM из URL лендинга (Part 4) ──
 const _sentLandingEvents = new Set(); // дедуп в рамках одной загрузки страницы
 
@@ -438,12 +463,17 @@ function topbar(backView,backLabel){
   const lowBanner=low?`<div style="background:#fef3c7;border-bottom:1px solid #f59e0b;padding:8px 20px;font-size:13px;text-align:center;color:#92400e">
     ⚠️ Баланс заканчивается.
     <a onclick="go('billing')" style="color:#92400e;font-weight:600;cursor:pointer;text-decoration:underline">Пополнить →</a></div>`:"";
+  // Найдено владельцем 31.07: шапка на КАЖДОЙ странице писала обезличенное
+  // "Тарифы", даже когда тариф уже оплачен -- узнать, какой именно тариф
+  // активен, можно было только зайдя в сам раздел оплаты. Теперь показываем
+  // название тарифа прямо здесь, если он есть (App.user.plan_title из /api/me).
+  const planLabel=App.user?.plan_title?`Тариф: ${esc(App.user.plan_title)}`:"Тарифы";
   return `<div class="topbar">
     <a class="brand" onclick="go('dashboard')"><span class="brand-name">Авто<span>пост</span></span></a>
     <div class="topbar-right">
       <div class="token-pill" onclick="go('billing')">
         <span class="dot" style="background:var(--accent)"></span>
-        <span style="font-size:13px;font-weight:500;color:var(--text-dim)">Тарифы</span>
+        <span style="font-size:13px;font-weight:500;color:var(--text-dim)">${planLabel}</span>
       </div>
       <button class="btn-ghost btn-sm" onclick="logout()">Выйти</button>
     </div></div>${lowBanner}${back}`;
@@ -458,14 +488,21 @@ function _intervalLabel(h){
 }
 function _nextGenerationLabel(c){
   if(c.enabled===false) return "на паузе";
-  // КРИТИЧНО (фикс противоречия): резерв очереди догенерируется на ближайшем
-  // тике планировщика (раз в минуту), а НЕ по интервалу расписания -- см.
-  // _refill_if_active в tasks.py. Пока очередь не заполнена до min_queue,
-  // честный ответ "в ближайшие минуты". Раньше здесь всегда считался
-  // интервал, и шапка канала обещала "через 12ч" ровно в тот момент, когда
-  // пост на самом деле появлялся через минуту.
-  const minQueue=c.queue_target||App.cfg?.min_queue||3;
-  if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
+  // КРИТИЧНО (фикс противоречия, часть 2): "в ближайшие минуты" верно только
+  // там, где резерв очереди реально ДОГЕНЕРИРУЕТСЯ на ближайшем тике --
+  // см. _refill_if_active в tasks.py. Для автопилота эта функция всего лишь
+  // return'ится сразу же (auto_publish -- ранний выход, коммит "Резерв
+  // очереди рос и при включённом автопилоте без всякой пользы"): плановая
+  // генерация публикует пост напрямую и происходит раз в interval_hours, а
+  // queue_count у автопилота всегда 0 вне зависимости от того, скоро
+  // следующий пост или через сутки. Раньше эта проверка стояла безусловно,
+  // и карточка автопилота с интервалом "раз в сутки" честно врала "в
+  // ближайшие минуты" сразу после публикации -- ровно то, что и заметил
+  // владелец 31.07 на канале с интервалом 24ч.
+  if(!c.auto_publish){
+    const minQueue=c.queue_target||App.cfg?.min_queue||3;
+    if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
+  }
   // Время следующей ГЕНЕРАЦИИ (не публикации!) = последняя генерация + интервал,
   // но не в прошлом. Публикация — отдельное понятие, происходит либо по явному
   // подтверждению пользователя, либо для scheduled-постов (см. renderPostCard).
@@ -604,9 +641,18 @@ function renderChanCard(c){
   // поэтому на паузе не создаётся ничего — а карточка обещала обратное, причём
   // строкой ниже той, где написано «На паузе». Про саму паузу тут не
   // повторяем: это уже сказано в статусе выше, здесь только последствие.
+  //
+  // Для автопилота «скоро появятся» тоже было ложью, только по другой причине
+  // (владелец 31.07): очереди у автопилота нет вообще -- генерация публикует
+  // пост сразу, минуя её (см. _refill_if_active в tasks.py, ранний выход при
+  // auto_publish). queue_count==0 у него -- нормальное постоянное состояние,
+  // а не "вот-вот заполнится". Объясняем это прямо, а не обещаем скорое
+  // появление того, чего не будет до следующего интервала.
   const emptyLine=c.enabled===false
     ? "Новые посты не создаются"
-    : "Очередь пуста — посты скоро появятся";
+    : c.auto_publish
+      ? "В очереди пусто — это нормально: автопилот пишет и сразу публикует, не копит очередь"
+      : "Очередь пуста — посты скоро появятся";
   const preview=c.next_post_preview
     ? `<div class="chan-preview">${renderTg(c.next_post_preview)}</div>`
     : `<div class="chan-preview chan-preview-empty">${emptyLine}</div>`;
@@ -3073,12 +3119,34 @@ async function renderBilling(){
     App._subscription=r.subscription; App._paymentMethod=r.payment_method||null;
   }catch(_){ App._subscription=null; App._paymentMethod=null; }
   const plans=[
-    {id:"p1",name:"Старт",price:490,regular:990,channels:1,postsMin:15,postsMax:30},
-    {id:"p2",name:"Про",price:990,regular:1990,channels:3,postsMin:30,postsMax:60,popular:true},
-    {id:"p3",name:"Бизнес",price:2490,regular:4990,channels:10,postsMin:75,postsMax:150},
-    {id:"p4",name:"Агентство",price:4990,regular:9990,channels:0,postsMin:150,postsMax:300},
+    {id:"p1",name:"Старт",price:490,regular:990,channels:1,postsMin:15,postsMax:30,tokens:600000},
+    {id:"p2",name:"Про",price:990,regular:1990,channels:3,postsMin:30,postsMax:60,popular:true,tokens:1200000},
+    {id:"p3",name:"Бизнес",price:2490,regular:4990,channels:10,postsMin:75,postsMax:150,tokens:3000000},
+    {id:"p4",name:"Агентство",price:4990,regular:9990,channels:0,postsMin:150,postsMax:300,tokens:6000000},
   ];
   const sub=App._subscription||null;
+  // Найдено владельцем 31.07: у кого уже есть тариф, тому не нужны во весь
+  // экран четыре карточки "Старт/Про/Бизнес/Агентство" -- нужен только свой
+  // тариф и способ его сменить. currentPlanId сначала берём из активной
+  // подписки (авторитетнее), иначе из App.user.plan_title (одноразовая
+  // оплата без рекуррента -- Subscription-строки нет, но тариф уже куплен).
+  let currentPlanId=null;
+  if(sub && sub.package_id) currentPlanId=sub.package_id;
+  else if(App.user?.plan_title){
+    const match=plans.find(p=>p.name===App.user.plan_title);
+    if(match) currentPlanId=match.id;
+  }
+  const hasPlan=!!currentPlanId;
+  const currentPlan=plans.find(p=>p.id===currentPlanId)||null;
+  // Решение владельца 31.07: даунгрейд запрещён полностью (кто хочет тариф
+  // проще -- отменяет подписку, это уже есть выше). Апгрейд стоит дешевле
+  // полной цены на долю неизрасходованного остатка ТЕКУЩЕГО тарифа --
+  // ровно та же формула, что и на сервере (см. /api/subscription/upgrade в
+  // main.py): здесь только превью для красивой цены на кнопке, реальную
+  // сумму сервер всё равно считает заново сам, клиенту в этом не доверяет.
+  const currentPriceRub=sub?(sub.rub||0):(currentPlan?.price||0);
+  const currentTokens=currentPlan?.tokens||0;
+  const hasCard=!!App._paymentMethod;
   $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap">
     <div class="page-head"><h1>Тарифы</h1>
       <p>Осталось <b>${Math.floor((App.user?.token_balance||0)/40000)}–${Math.floor((App.user?.token_balance||0)/20000)}</b> постов.<br>
@@ -3086,22 +3154,53 @@ async function renderBilling(){
     ${(!App.cfg?.yookassa_enabled&&!App.cfg?.yoomoney_enabled)?`<div class="card" style="border-color:var(--accent);background:var(--accent-soft);margin-bottom:16px">
       <p style="color:var(--accent-dark)">Приём платежей настраивается.</p></div>`:""}
     ${_subscriptionCard(sub)}
-    ${_paymentMethodBlock()}
     ${plans.some(p=>p.regular)?`<div class="promo-bar">
       <b>Цены на время запуска.</b> Сервис ещё развивается — пока он в раннем доступе, тарифы держим ниже
       обычных.${App.cfg?.subscription_enabled?" Цена, по которой вы подписались, за вами сохранится.":""}
     </div>`:""}
-    <div class="grid grid-2" style="margin-bottom:16px">
-      ${plans.map(p=>`<div class="price-card" style="position:relative;${p.popular?"border-color:var(--accent)":""}">
-        ${p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
+    ${hasPlan?`<div style="text-align:center;margin-bottom:16px">
+      <button class="btn-outline btn-sm" onclick="togglePlansGrid()" id="plans_toggle_btn">Показать другие тарифы</button>
+    </div>`:""}
+    <div id="plansGrid" class="grid grid-2 ${hasPlan?"hidden":""}" style="margin-bottom:16px">
+      ${plans.map(p=>{
+        const isCurrent=p.id===currentPlanId;
+        const isDowngrade=!!sub && !isCurrent && p.price<currentPriceRub;
+        const isUpgrade=!!sub && !isCurrent && p.price>currentPriceRub;
+        let upgradePrice=null, creditRub=0;
+        if(isUpgrade){
+          const unusedFraction=currentTokens>0?Math.min(1,(App.user?.token_balance||0)/currentTokens):0;
+          creditRub=Math.round(currentPriceRub*unusedFraction);
+          upgradePrice=Math.max(0,p.price-creditRub);
+        }
+        const priceHtml=(isUpgrade && creditRub>0)
+          ?`<div class="p-regular" style="text-decoration:line-through">${_rub(p.price)} ₽</div>
+            <div class="p-price" style="font-size:24px">${_rub(upgradePrice)} ₽</div>`
+          :`${p.regular?`<div class="p-regular">потом ${_rub(p.regular)} ₽</div>`:""}
+            <div class="p-price" style="font-size:24px">${_rub(p.price)}\u00A0₽${App.cfg?.subscription_enabled?"/мес":""}</div>`;
+        let actionHtml;
+        if(isCurrent){
+          actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Уже подключён</div>`;
+        } else if(isDowngrade){
+          actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Тариф ниже вашего — чтобы перейти, отмените текущую подписку выше</div>`;
+        } else if(isUpgrade && !hasCard){
+          actionHtml=`<div class="hint" style="text-align:center;margin-top:8px">Нужен сохранённый способ оплаты — отмените подписку и оформите новый тариф заново</div>`;
+        } else if(isUpgrade){
+          actionHtml=`<button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="upgradePlan('${p.id}')">Перейти на «${esc(p.name)}»</button>`
+            +(creditRub>0?`<div class="hint" style="text-align:center;margin-top:6px">Цена снижена — учтён неизрасходованный остаток тарифа «${esc(currentPlan?.name||"")}»</div>`:"");
+        } else {
+          actionHtml=`<button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>`;
+        }
+        return `<div class="price-card" style="position:relative;${(p.popular&&!isCurrent)?"border-color:var(--accent)":""}${isCurrent?"border-color:var(--green,#2e7d32)":""}">
+        ${isCurrent?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--green,#2e7d32);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Ваш тариф</div>`
+          :p.popular?`<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:11px;font-weight:600;padding:2px 12px;border-radius:99px;white-space:nowrap">Популярный</div>`:""}
         <div class="p-name">${p.name}</div>
-        ${p.regular?`<div class="p-regular">потом ${_rub(p.regular)} ₽</div>`:""}
-        <div class="p-price" style="font-size:24px">${_rub(p.price)}\u00A0₽${App.cfg?.subscription_enabled?"/мес":""}</div>
+        ${priceHtml}
         <div class="p-tokens" style="line-height:1.8">
           📺 ${p.channels===0?"Без лимита каналов":`${p.channels} ${_plural(p.channels,"канал","канала","каналов")}`}<br>
           ✦ ${p.postsMin}–${p.postsMax} постов${App.cfg?.subscription_enabled?"/мес":""}</div>
-        <button class="btn" style="width:100%;justify-content:center;margin-top:8px" onclick="buy('${p.id}')">Выбрать</button>
-      </div>`).join("")}
+        ${actionHtml}
+      </div>`;
+      }).join("")}
     </div>
     <div class="card" style="margin-bottom:16px">
       <div class="card-title">🎁 Реферальная программа</div>
@@ -3115,6 +3214,7 @@ async function renderBilling(){
       </button>
       <div id="payList" class="hidden text-faint"></div>
     </div>
+    ${_paymentMethodBlock()}
     <div style="text-align:center;margin-top:16px;padding-bottom:8px">
       <button class="btn-danger btn-sm" onclick="deleteAccount()" style="font-size:12px;opacity:.6">Удалить аккаунт</button>
     </div></div>`;
@@ -3126,9 +3226,10 @@ async function renderBilling(){
         <button class="btn-outline btn-sm" onclick="navigator.clipboard.writeText('${esc(code)}').then(()=>toast('Скопировано','ok'))">Копировать</button>
       </div>
       <div style="font-size:13px;color:var(--text-dim);background:var(--surface2);border-radius:10px;padding:12px 14px;line-height:1.7">
-        1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent);display:inline-block;padding:14px 0">@maintrpost_bot</a><br>
-        2. «Открыть АвтоПост» → Зарегистрироваться<br>
-        3. Введите реферальный код: <b>${esc(code)}</b>
+        <div style="font-weight:600;color:var(--text);margin-bottom:4px">Отправьте другу — эти шаги для него, не для вас:</div>
+        <div>1. Откройте <a href="https://t.me/maintrpost_bot" target="_blank" style="color:var(--accent)">бота в Telegram</a> или сайт <a href="https://projectautopost.ru" target="_blank" style="color:var(--accent)">projectautopost.ru</a></div>
+        <div>2. Зарегистрируйтесь</div>
+        <div>3. Введите реферальный код: <b>${esc(code)}</b></div>
       </div>
       <div class="hint" style="margin-top:8px">Приглашений: <b>${me.referrals_count||0}</b></div>`;
   }catch(_){}
@@ -3136,15 +3237,11 @@ async function renderBilling(){
   window._loadPayHistory = async function(){
     try{
       const ps=await api("GET","/payments");
-      ps.forEach(p=>{
-        if(p.status==="paid"){
-          const key="ym_paid_"+(p.id||p.label||p.created_at);
-          if(!localStorage.getItem(key)){
-            trackGoal("payment_success",{package_id:p.package_id||"",tokens:p.tokens||0,rub:p.rub||0});
-            localStorage.setItem(key,"1");
-          }
-        }
-      });
+      // Подстраховка: основной момент отправки цели "payment_success" --
+      // возврат со страницы оплаты (см. boot() в app.part16.js), этот вызов
+      // только досылает то, что могло не подтвердиться вовремя. Дедуп через
+      // localStorage внутри _reportPaidPayments не даст засчитать платёж дважды.
+      _reportPaidPayments(ps);
       // В истории платежей не было главного — суммы. Строка выглядела как
       // «27.07.2026, 14:05 · 600 000 ток.»: внутренняя единица учёта на первом
       // месте и ни рубля. Человек заходит сюда посмотреть, сколько и за что
@@ -3166,6 +3263,14 @@ async function renderBilling(){
         :`<p style="font-size:13px;color:var(--text-faint)">Платежей пока не было.</p>`;
     }catch(_){}
   };
+}
+
+function togglePlansGrid(){
+  const grid=$("plansGrid"),btn=$("plans_toggle_btn");
+  if(!grid) return;
+  const hidden=grid.classList.contains("hidden");
+  grid.classList.toggle("hidden",!hidden);
+  if(btn) btn.textContent=hidden?"Скрыть тарифы":"Показать другие тарифы";
 }
 
 function togglePayHistory(){
@@ -3337,6 +3442,38 @@ async function buy(pid){
     toast(e&&e.message?e.message:"Ошибка запроса","err");
   }
 }
+
+let _upgradeInFlight=false;
+
+// Смена тарифа на более дорогой -- списывается СРАЗУ по уже сохранённой
+// карте (см. POST /subscription/upgrade), без редиректа на ЮKassa. Сумму
+// на кнопке считаем здесь только для превью -- сколько реально спишут,
+// сервер решает заново сам по свежим данным, клиентскому числу не доверяет.
+async function upgradePlan(pid){
+  if(_upgradeInFlight) return;
+  const plan=(App.cfg?.packages||[]).find(p=>p.id===pid);
+  const title=plan?.title||pid;
+  if(!confirm(
+    `Перейти на тариф «${title}»?\n\n`+
+    `Спишем доплату сейчас по сохранённой карте (неизрасходованный остаток `+
+    `текущего тарифа уже учтён в цене). Дальше подписка продлевается по `+
+    `полной цене «${title}».`
+  )) return;
+  _upgradeInFlight=true;
+  logProductEvent("subscription_upgrade_started", pid);
+  try{
+    const r=await api("POST","/subscription/upgrade",{package_id:pid});
+    trackGoal("subscription_upgraded",{package_id:pid,charged_rub:r.charged_rub,credit_rub:r.credit_rub});
+    toast(`Тариф изменён — списано ${_rub(r.charged_rub)} ₽`,"ok");
+    renderBilling();
+  }catch(e){
+    logProductEvent("subscription_upgrade_failed", pid);
+    toast(e&&e.message?e.message:"Не удалось сменить тариф","err");
+  }finally{
+    _upgradeInFlight=false;
+  }
+}
+
 async function deleteAccount(){
   if(!confirm("Удалить аккаунт?\n\nЭто удалит все каналы, посты и данные.")) return;
   if(prompt("Введите DELETE:")!=="DELETE") return toast("Отменено");
@@ -3773,6 +3910,12 @@ async function boot(){
       const params=new URLSearchParams(window.location.search);
       if(params.get("paid")){
         logProductEvent("payment_returned");
+        // Настоящая цель для Яндекс.Директ/Метрики -- здесь, а не в
+        // раскрытии "Истории платежей" (см. _reportPaidPayments). Два
+        // вызова: сразу и через 5с -- вебхук ЮKassa может подтвердить
+        // платёж на пару секунд позже, чем браузер вернётся с редиректом.
+        _reportPaidPayments();
+        setTimeout(_reportPaidPayments, 5000);
         params.delete("paid");
         const newUrl=window.location.pathname+(params.toString()?"?"+params.toString():"");
         window.history.replaceState({},"",newUrl);

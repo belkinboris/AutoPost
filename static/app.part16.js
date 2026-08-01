@@ -76,6 +76,12 @@ async function boot(){
       const params=new URLSearchParams(window.location.search);
       if(params.get("paid")){
         logProductEvent("payment_returned");
+        // Настоящая цель для Яндекс.Директ/Метрики -- здесь, а не в
+        // раскрытии "Истории платежей" (см. _reportPaidPayments). Два
+        // вызова: сразу и через 5с -- вебхук ЮKassa может подтвердить
+        // платёж на пару секунд позже, чем браузер вернётся с редиректом.
+        _reportPaidPayments();
+        setTimeout(_reportPaidPayments, 5000);
         params.delete("paid");
         const newUrl=window.location.pathname+(params.toString()?"?"+params.toString():"");
         window.history.replaceState({},"",newUrl);

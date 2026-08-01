@@ -185,12 +185,17 @@ function topbar(backView,backLabel){
   const lowBanner=low?`<div style="background:#fef3c7;border-bottom:1px solid #f59e0b;padding:8px 20px;font-size:13px;text-align:center;color:#92400e">
     ⚠️ Баланс заканчивается.
     <a onclick="go('billing')" style="color:#92400e;font-weight:600;cursor:pointer;text-decoration:underline">Пополнить →</a></div>`:"";
+  // Найдено владельцем 31.07: шапка на КАЖДОЙ странице писала обезличенное
+  // "Тарифы", даже когда тариф уже оплачен -- узнать, какой именно тариф
+  // активен, можно было только зайдя в сам раздел оплаты. Теперь показываем
+  // название тарифа прямо здесь, если он есть (App.user.plan_title из /api/me).
+  const planLabel=App.user?.plan_title?`Тариф: ${esc(App.user.plan_title)}`:"Тарифы";
   return `<div class="topbar">
     <a class="brand" onclick="go('dashboard')"><span class="brand-name">Авто<span>пост</span></span></a>
     <div class="topbar-right">
       <div class="token-pill" onclick="go('billing')">
         <span class="dot" style="background:var(--accent)"></span>
-        <span style="font-size:13px;font-weight:500;color:var(--text-dim)">Тарифы</span>
+        <span style="font-size:13px;font-weight:500;color:var(--text-dim)">${planLabel}</span>
       </div>
       <button class="btn-ghost btn-sm" onclick="logout()">Выйти</button>
     </div></div>${lowBanner}${back}`;
@@ -205,14 +210,21 @@ function _intervalLabel(h){
 }
 function _nextGenerationLabel(c){
   if(c.enabled===false) return "на паузе";
-  // КРИТИЧНО (фикс противоречия): резерв очереди догенерируется на ближайшем
-  // тике планировщика (раз в минуту), а НЕ по интервалу расписания -- см.
-  // _refill_if_active в tasks.py. Пока очередь не заполнена до min_queue,
-  // честный ответ "в ближайшие минуты". Раньше здесь всегда считался
-  // интервал, и шапка канала обещала "через 12ч" ровно в тот момент, когда
-  // пост на самом деле появлялся через минуту.
-  const minQueue=c.queue_target||App.cfg?.min_queue||3;
-  if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
+  // КРИТИЧНО (фикс противоречия, часть 2): "в ближайшие минуты" верно только
+  // там, где резерв очереди реально ДОГЕНЕРИРУЕТСЯ на ближайшем тике --
+  // см. _refill_if_active в tasks.py. Для автопилота эта функция всего лишь
+  // return'ится сразу же (auto_publish -- ранний выход, коммит "Резерв
+  // очереди рос и при включённом автопилоте без всякой пользы"): плановая
+  // генерация публикует пост напрямую и происходит раз в interval_hours, а
+  // queue_count у автопилота всегда 0 вне зависимости от того, скоро
+  // следующий пост или через сутки. Раньше эта проверка стояла безусловно,
+  // и карточка автопилота с интервалом "раз в сутки" честно врала "в
+  // ближайшие минуты" сразу после публикации -- ровно то, что и заметил
+  // владелец 31.07 на канале с интервалом 24ч.
+  if(!c.auto_publish){
+    const minQueue=c.queue_target||App.cfg?.min_queue||3;
+    if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
+  }
   // Время следующей ГЕНЕРАЦИИ (не публикации!) = последняя генерация + интервал,
   // но не в прошлом. Публикация — отдельное понятие, происходит либо по явному
   // подтверждению пользователя, либо для scheduled-постов (см. renderPostCard).
