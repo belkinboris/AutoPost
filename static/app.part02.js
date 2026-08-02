@@ -32,8 +32,28 @@ async function renderNewChannelRouter(){
   // на полноценную форму с настройками, не на упрощённый онбординг.
   let chans=[];
   try{ chans = await api("GET","/channels"); }catch(_){}
-  if(chans.length>0) return renderNewChannelSettings();
-  return renderQuickStart();
+  if(chans.length===0) return renderQuickStart();
+
+  // Найдено владельцем 31.07: лимит каналов раньше проверялся только на
+  // сервере, ПОСЛЕ того как человек заполнял всю форму (название, тема,
+  // username) и жал "Создать канал" — обидно тратить время впустую, если
+  // тариф всё равно не позволит. Проверяем здесь же, до формы.
+  await refreshUser();
+  const limit=App.user?.channel_limit ?? 0;
+  if(limit>0 && chans.length>=limit) return renderChannelLimitReached(chans.length, limit);
+  return renderNewChannelSettings();
+}
+
+function renderChannelLimitReached(count, limit){
+  $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap" style="max-width:480px;text-align:center;margin-top:60px">
+    <div style="font-size:32px;margin-bottom:12px">📺</div>
+    <h2>Каналов на тарифе больше нет</h2>
+    <p style="color:var(--text-dim);margin:12px 0 20px">
+      На вашем тарифе доступно ${limit} ${_plural(limit,"канал","канала","каналов")}, а у вас уже ${count}.
+      Чтобы добавить ещё один, выберите тариф побольше.
+    </p>
+    <button class="btn" style="width:100%;justify-content:center" onclick="go('billing')">Перейти к тарифам</button>
+  </div>`;
 }
 
 // AUTH
@@ -210,21 +230,16 @@ function _intervalLabel(h){
 }
 function _nextGenerationLabel(c){
   if(c.enabled===false) return "на паузе";
-  // КРИТИЧНО (фикс противоречия, часть 2): "в ближайшие минуты" верно только
-  // там, где резерв очереди реально ДОГЕНЕРИРУЕТСЯ на ближайшем тике --
-  // см. _refill_if_active в tasks.py. Для автопилота эта функция всего лишь
-  // return'ится сразу же (auto_publish -- ранний выход, коммит "Резерв
-  // очереди рос и при включённом автопилоте без всякой пользы"): плановая
-  // генерация публикует пост напрямую и происходит раз в interval_hours, а
-  // queue_count у автопилота всегда 0 вне зависимости от того, скоро
-  // следующий пост или через сутки. Раньше эта проверка стояла безусловно,
-  // и карточка автопилота с интервалом "раз в сутки" честно врала "в
-  // ближайшие минуты" сразу после публикации -- ровно то, что и заметил
-  // владелец 31.07 на канале с интервалом 24ч.
-  if(!c.auto_publish){
-    const minQueue=c.queue_target||App.cfg?.min_queue||3;
-    if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
-  }
+  // Единая модель очереди (C14, решение владельца 01-02.08): _refill_queue
+  // в tasks.py держит очередь заполненной до queue_target одинаково для
+  // обоих режимов публикации (autopilot больше не публикует пост напрямую
+  // мимо очереди -- см. generate_for_channel) -- поэтому "очередь не полна,
+  // следующий пост появится на ближайшем тике" верно для любого режима, а
+  // не только для "публикация после подтверждения". Раньше здесь стояла
+  // проверка только для !c.auto_publish, и карточка автопилота с интервалом
+  // "раз в сутки" врала "в ближайшие минуты" сразу после публикации.
+  const minQueue=c.queue_target||App.cfg?.min_queue||3;
+  if(typeof c.queue_count==="number" && c.queue_count<minQueue) return "в ближайшие минуты";
   // Время следующей ГЕНЕРАЦИИ (не публикации!) = последняя генерация + интервал,
   // но не в прошлом. Публикация — отдельное понятие, происходит либо по явному
   // подтверждению пользователя, либо для scheduled-постов (см. renderPostCard).

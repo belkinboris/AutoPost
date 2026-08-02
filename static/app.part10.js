@@ -58,41 +58,62 @@ function renderPostCard(p, pubMs, channelEnabled){
     statusPill=`<div class="status-pill status-pill-gray">Удалён</div>`;
   } else if(isPaused){
     statusPill=`<div class="status-pill status-pill-gray">На паузе</div>`;
-  } else if(sched && p.scheduled_at){
+  } else if(sched && p.approval_deadline){
+    // Единая модель очереди (C14, решение владельца 01-02.08): пост в
+    // режиме "публикация после подтверждения" стоит в очереди СО своим
+    // scheduled_at (как и автопилот) -- разница только в том, что перед
+    // этим временем нужно явное подтверждение. Раньше status="scheduled" и
+    // "ждёт подтверждения" были взаимоисключающими ветками, из-за чего
+    // такой пост показывал только синий "опубликуется сам" -- то есть
+    // ровно неверное обещание.
+    //
+    // Дедлайн подтверждения -- то же самое время, что и публикация: не
+    // подтвердят вовремя, пост уйдёт в конец очереди с НОВЫМ временем
+    // (tasks._requeue_unconfirmed_post), а не опубликуется молча.
+    const dl=new Date(p.approval_deadline).getTime();
+    const diff=dl-Date.now();
+    const mm=Math.max(0,Math.floor(diff/60000)),ss=Math.max(0,Math.floor((diff%60000)/1000));
+    const label=diff>0?`⏱ через ${mm}:${String(ss).padStart(2,"0")}, если не подтвердите`:"⏱ время почти вышло…";
+    statusPill=`<div class="status-pill status-pill-yellow" data-approval-countdown="${dl}">${label}</div>`;
+    subLine=`<div class="status-subline">Не подтвердите вовремя — пост уйдёт в конец очереди</div>`;
+  } else if(sched && p.scheduled_at && App._chan?.auto_publish){
     const sd=new Date(p.scheduled_at+"Z");const diff=sd-Date.now();
     const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000),sec=Math.floor((diff%60000)/1000);
     const countdown=diff>0?(h>0?`через ${h}ч ${m}м`:`через ${m}:${String(sec).padStart(2,"0")}`):"скоро";
     const ts=sd.toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
     statusPill=`<div class="status-pill status-pill-blue" id="countdown_${p.id}" data-target-ms="${sd.getTime()}">⏱ ${countdown}</div>`;
     subLine=`<div class="status-subline">Опубликуется ${ts}</div>`;
+  } else if(sched && p.scheduled_at){
+    // Режим подтверждения, пост стоит в очереди, но карточку подтверждения
+    // завести не удалось (не доставилась в Telegram -- см. tasks.py
+    // _send_approval_card) или время выбрано вручную без цикла подтверждения.
+    // due_scheduled_posts фильтрует confirm-mode целиком (database.py) --
+    // такой пост НИКОГДА не опубликуется по тику, только по кнопке. Синий
+    // "опубликуется сам" здесь был бы обещанием, которого система не
+    // выполнит (правило 5).
+    const ts=new Date(p.scheduled_at+"Z").toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+    statusPill=`<div class="status-pill status-pill-yellow">Ждёт вашего решения</div>`;
+    subLine=`<div class="status-subline">Стоит в очереди на ${ts} · сам не опубликуется</div>`;
   } else if(editable){
-    // КРИТИЧНО (фикс путаницы из задачи): pending-пост НИКОГДА не должен
-    // показывать синий countdown публикации, даже если у канала включена
-    // auto_publish. Синий countdown — это только для status="scheduled"
-    // (пост явно поставлен в расписание через "Запланировать"). Раньше здесь
-    // была ветка, которая путала "канал настроен на автопубликацию по
-    // расписанию" с "этот конкретный пост скоро опубликуется" — это и
-    // создавало конфликт "Ждёт подтверждения" + синий таймер одновременно.
-    //
-    // Обещание про автопубликацию показываем ТОЛЬКО если у поста реально
-    // заведён дедлайн (PostApproval). Такой таймер есть лишь у постов
-    // регулярной генерации по расписанию; посты из онбординга, созданные
-    // вручную и догенерация резерва очереди идут с force_pending=True и сами
-    // не опубликуются никогда (см. tasks.py). Раньше очередь обещала
-    // "опубликуется сам через 30 мин" на уровне всего канала — то есть всем
-    // постам подряд, включая те, у которых никакого таймера нет.
+    // pending без scheduled_at -- только онбординг-черновик (force_pending
+    // в generate_for_channel); подтверждения у такого поста не бывает
+    // никогда, поэтому веток с approval_deadline здесь больше нет.
     const created=new Date(p.created_at+"Z").toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
-    if(p.approval_deadline){
-      const dl=new Date(p.approval_deadline).getTime();
-      const diff=dl-Date.now();
-      const mm=Math.max(0,Math.floor(diff/60000)),ss=Math.max(0,Math.floor((diff%60000)/1000));
-      const label=diff>0?`⏱ через ${mm}:${String(ss).padStart(2,"0")}, если не подтвердите`:"⏱ публикуется…";
-      statusPill=`<div class="status-pill status-pill-yellow" data-approval-countdown="${dl}">${label}</div>`;
-      subLine=`<div class="status-subline">Не отреагируете — опубликуем этот пост сами</div>`;
-    } else {
-      statusPill=`<div class="status-pill status-pill-yellow">Ждёт вашего решения</div>`;
-      subLine=`<div class="status-subline">Создан ${created} · сам не опубликуется</div>`;
-    }
+    statusPill=`<div class="status-pill status-pill-yellow">Ждёт вашего решения</div>`;
+    subLine=`<div class="status-subline">Создан ${created} · сам не опубликуется</div>`;
+  }
+  // Красная плашка "не подтвердили вовремя" -- отдельной строкой поверх
+  // обычного статуса, а не вместо него: пост уже получил новый цикл (новое
+  // scheduled_at и, в режиме подтверждения, новый таймер выше) -- это
+  // только объясняет, почему он оказался в конце очереди (владелец 01-02.08:
+  // каждое действие платформы должно быть понятно пользователю).
+  let requeuedLine="";
+  if(p.requeued_at && (sched || editable)){
+    // Тот же приглушённый status-pill-red, что и у "Ошибка публикации" выше
+    // по файлу (бледный --red-bg фон, текст --red) -- без сплошной заливки
+    // и без эмодзи-кружка, чтобы не выбивалось ярким пятном из общей палитры.
+    const rt=new Date(p.requeued_at+"Z").toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+    requeuedLine=`<div class="status-pill status-pill-red" style="margin-top:6px">Не подтвердили вовремя ${rt} — перенесён в конец очереди</div>`;
   }
 
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────
@@ -167,6 +188,7 @@ function renderPostCard(p, pubMs, channelEnabled){
   return `<div class="post-card" id="pc_${p.id}">
     ${statusPill}
     ${subLine}
+    ${requeuedLine}
     <div id="ppreview_${p.id}" style="position:relative">
       <div id="pb_${p.id}" class="post-body post-preview-short" style="margin-top:8px">${renderTg(p.text)}</div>
       <button id="pexp_${p.id}" class="expand-btn" onclick="toggleExpand(${p.id})">Читать полностью ↓</button>
@@ -234,7 +256,7 @@ function startDashboardCountdowns(){
       const targetMs=parseInt(el.dataset.approvalCountdown||"0",10);
       if(!targetMs) return;
       const diff=targetMs-Date.now();
-      if(diff<=0){el.textContent="⏱ публикуется…";return;}
+      if(diff<=0){el.textContent="⏱ время почти вышло…";return;}
       const m=Math.floor(diff/60000),sec=Math.floor((diff%60000)/1000);
       el.textContent=`⏱ через ${m}:${String(sec).padStart(2,"0")}, если не подтвердите`;
     });

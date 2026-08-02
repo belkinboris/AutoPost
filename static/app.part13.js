@@ -79,16 +79,26 @@ async function saveChannel(){
     use_web_search:$("sw_web")?$("sw_web").checked:App._chan.use_web_search,
     auto_publish:$("sw_auto")?$("sw_auto").checked:App._chan.auto_publish,
   };
+  if(App._chan.queue_depth) payload.queue_depth=App._chan.queue_depth;
   if(chatChanged) payload.tg_chat=newChat;
   const notif={
     notify_published:$("sw_n2")?$("sw_n2").checked:false,
+    notify_approval_pending:$("sw_n4")?$("sw_n4").checked:false,
     notify_low_tokens:$("sw_n3")?$("sw_n3").checked:true,
   };
   try{
-    await api("PATCH","/channels/"+App._chan.id,payload);
+    const updated=await api("PATCH","/channels/"+App._chan.id,payload);
     await api("PATCH","/me",notif);
-    // Обновляем локально без перерендера — чтобы тумблеры не сбросились
-    if(App.user){ App.user.notify_published=notif.notify_published; App.user.notify_low_tokens=notif.notify_low_tokens; }
+    // Обновляем локально без перерендера — чтобы тумблеры не сбросились.
+    // queue_depth берём из ответа, а не из payload -- бэкенд мог зажать
+    // значение в потолок тарифа (см. patch_channel), и степпер должен
+    // показать то, что реально сохранилось, а не то, что нажали.
+    if(updated) App._chan.queue_depth=updated.queue_depth;
+    if(App.user){
+      App.user.notify_published=notif.notify_published;
+      App.user.notify_approval_pending=notif.notify_approval_pending;
+      App.user.notify_low_tokens=notif.notify_low_tokens;
+    }
     toast("Сохранено ✓","ok");
   }catch(e){toast(e&&e.message?e.message:"Ошибка запроса","err");}
 }

@@ -124,6 +124,17 @@ async def test_existing_channels_over_limit_are_not_removed(client, token):
     assert r.status_code == 400, "а вот новый сверх лимита -- уже нет"
 
 
+async def test_me_exposes_channel_limit_for_frontend_precheck(client, token):
+    """Фронт должен узнать лимит ДО формы нового канала, не после отказа сервера."""
+    r = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.json()["channel_limit"] == 1  # бесплатный
+
+    me = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    _pay(me.json()["id"], "p4")  # Агентство -- без лимита
+    r = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.json()["channel_limit"] == 0
+
+
 # ── Ручное начисление токенов ─────────────────────────────────────────────
 
 # ── Название тарифа в /api/me (для шапки и карточек "Ваш тариф") ──────────

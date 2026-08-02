@@ -46,6 +46,7 @@ class _RuleIn(_BaseModel):
 class _MePatch(_BaseModel):
     notify_new_post: _Opt[bool] = None
     notify_published: _Opt[bool] = None
+    notify_approval_pending: _Opt[bool] = None
     notify_low_tokens: _Opt[bool] = None
     tg_chat_id: _Opt[int] = None
 
@@ -319,6 +320,7 @@ def get_config():
         "public_url": config.PUBLIC_URL,
         "packages": config.TOKEN_PACKAGES,
         "soft_control_minutes": config.SOFT_CONTROL_APPROVAL_MINUTES,
+        "soft_control_warning_minutes": config.SOFT_CONTROL_WARNING_MINUTES,
         # Целевая глубина очереди -- сколько готовых постов система держит
         # наготове (tasks.MIN_QUEUE). Фронт показывает "в очереди N из M" и
         # пустые слоты-заглушки, поэтому значение обязано приходить с сервера,
@@ -629,7 +631,7 @@ def me(user: User = Depends(current_user)):
         # лимита каналов: шапка везде писала обезличенное "Тарифы", хотя
         # человек уже оплатил -- негде было даже увидеть, какой тариф у него
         # активен, не заходя специально в раздел оплаты.
-        _, plan_title = _channel_limit_with_plan(s, user.id)
+        channel_limit, plan_title = _channel_limit_with_plan(s, user.id)
     return {
         "id": user.id,
         "email": user.email,
@@ -637,8 +639,13 @@ def me(user: User = Depends(current_user)):
         "is_admin": user.is_admin,
         "ref_code": user.ref_code,
         "referrals_count": count,
+        # 0 -- без лимита (см. _channel_limit_with_plan). Нужен фронту, чтобы
+        # предупредить о лимите ДО формы нового канала, а не после того как
+        # человек её заполнил и нажал "Создать" (владелец 31.07).
+        "channel_limit": channel_limit,
         "tg_chat_id": user.tg_chat_id,
         "notify_published": user.notify_published,
+        "notify_approval_pending": user.notify_approval_pending,
         "notify_low_tokens": user.notify_low_tokens,
         "plan_title": plan_title,
     }
@@ -652,6 +659,15 @@ def _channel_dict(s, ch: Channel) -> dict:
         d["daily_times"] = json.loads(ch.daily_times or "[]")
     except Exception:
         d["daily_times"] = []
+
+    # "Генерируется следующий пост" (C14, пункт 6, владелец 01.08): булев
+    # признак, а не сырой generating_since -- фронту не нужно знать формат
+    # даты, только факт. Порог 3 минуты -- защита от навсегда "зависшего"
+    # флага, если процесс упал посреди генерации (generate_for_channel
+    # снимает флаг в finally, но finally не выполнится при, например, kill -9).
+    d["generating"] = bool(
+        ch.generating_since and (datetime.utcnow() - ch.generating_since) < timedelta(minutes=3)
+    )
 
     # Данные для карточки канала в кабинете: что дальше в очереди и когда
     # опубликуется -- без этого карточка показывает только настройки, а не
@@ -672,16 +688,28 @@ def _channel_dict(s, ch: Channel) -> dict:
     # Целевая глубина очереди зависит от того, оплачивал ли владелец (см.
     # tasks.queue_target_for_user), поэтому приходит здесь, а не в /api/config:
     # тот отдаётся без авторизации и одинаков для всех.
+    #
+    # queue_target -- фактическая цель пополнения (с учётом Channel.queue_depth,
+    # если задан). queue_ceiling -- потолок тарифа БЕЗ учёта queue_depth: нужен
+    # фронту отдельно, чтобы нарисовать степпер "от MIN_QUEUE до потолка" и
+    # честно показать, докуда вообще можно увеличивать (C14, владелец 01.08).
     d["queue_target"] = tasks.MIN_QUEUE
+    d["queue_ceiling"] = tasks.MIN_QUEUE
     try:
-        d["queue_target"] = tasks.queue_target_for_user(s, ch.user_id)
+        d["queue_target"] = tasks.queue_target_for_user(s, ch.user_id, ch)
+        d["queue_ceiling"] = tasks.queue_target_for_user(s, ch.user_id)
     except Exception:
         logger.exception(f"_channel_dict: не удалось определить queue_target для канала {ch.id}")
         s.rollback()
     try:
+        # Единая модель очереди (C14): посты встают в очередь со статусом
+        # "scheduled", а не "pending" (pending остаётся только у
+        # онбординг-черновиков, см. generate_for_channel force_pending) --
+        # "следующий" пост это ближайший по scheduled_at, а не по дате
+        # создания.
         next_post = s.exec(
-            select(Post).where(Post.channel_id == ch.id, Post.status == "pending")
-            .order_by(Post.created_at)
+            select(Post).where(Post.channel_id == ch.id, Post.status.in_(["pending", "scheduled"]))
+            .order_by(Post.scheduled_at.is_(None).asc(), Post.scheduled_at, Post.created_at)
         ).first()
         d["next_post_preview"] = generator._clean_post(next_post.text)[:220] if next_post else None
         d["queue_count"] = len(s.exec(
@@ -886,6 +914,15 @@ def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depends(curr
             # Сбрасываем verified только если реально поменялся username
             if new_chat != (ch.tg_chat or ""):
                 ch.verified = False
+        if "queue_depth" in payload:
+            # Настраиваемая глубина очереди (C14, владелец 01.08): зажимаем
+            # в [MIN_QUEUE, потолок тарифа] здесь же, при записи -- иначе
+            # бесплатный пользователь мог бы сохранить queue_depth=7, который
+            # молча ничего не делает (queue_target_for_user всё равно обрежет
+            # его до потолка при чтении), и не понимать, почему очередь не
+            # растёт (правило 5: интерфейс не обещает того, чего нет).
+            ceiling = tasks.queue_target_for_user(s, user.id)
+            payload["queue_depth"] = max(tasks.MIN_QUEUE, min(payload["queue_depth"], ceiling))
         # При возобновлении ставим last_generated_at = now
         # чтобы следующая авто-генерация была через полный интервал, а не немедленно
         if payload.get("enabled") is True and not ch.enabled:
@@ -983,7 +1020,35 @@ async def verify_channel(channel_id: int, user: User = Depends(current_user)):
 async def generate_channel(channel_id: int, data: PostIn = PostIn(), user: User = Depends(current_user)):
     with session() as s:
         _own_channel(s, channel_id, user)
-    result = await tasks.generate_for_channel(channel_id, topic=data.topic, force_pending=True)
+    # Единая модель очереди (C14, решение владельца 01-02.08): "Написать пост
+    # сейчас" встаёт в общую очередь на тех же правах, что и плановая
+    # генерация по расписанию -- получает scheduled_at и (в режиме
+    # подтверждения) обычный таймер согласования. force_pending=False
+    # (по умолчанию) -- этот флаг остался только для онбординга, где первый
+    # черновик показывается сразу на экране, ещё до всякой очереди.
+    #
+    # Найдено владельцем 31.07, исправлено повторно 02.08: раньше здесь
+    # стояло force_pending=True безусловно (пост "Ждёт вашего решения ... сам
+    # не опубликуется" даже на автопилоте), затем force_pending=not
+    # auto_publish (публиковал МГНОВЕННО на автопилоте) -- оба варианта
+    # противоречили принципу "пост никогда не публикуется в момент
+    # генерации", который владелец сформулировал явно после разбора обеих
+    # попыток.
+    #
+    # scheduled_at (C14, пункт 4): пикер даты/времени у "Написать пост
+    # сейчас" -- пост встаёт в очередь на выбранное место вместо стандартного
+    # следующего слота. Проверка "не в прошлом" -- здесь, на границе системы
+    # с пользовательским вводом (generate_for_channel её не делает).
+    target_scheduled_at = None
+    if data.scheduled_at:
+        try:
+            target_scheduled_at = datetime.fromisoformat(data.scheduled_at.replace("Z", ""))
+        except Exception:
+            raise HTTPException(400, "Неверный формат даты")
+        if target_scheduled_at <= datetime.utcnow():
+            raise HTTPException(400, "Выберите время в будущем")
+
+    result = await tasks.generate_for_channel(channel_id, topic=data.topic, target_scheduled_at=target_scheduled_at)
     if not result["ok"]:
         raise HTTPException(400, result["message"])
     return result
@@ -1124,13 +1189,11 @@ def list_posts(channel_id: int, user: User = Depends(current_user)):
             select(Post).where(Post.channel_id == channel_id).order_by(Post.created_at.desc())
         ).all()
         # Дедлайн автопубликации -- ПОштучно, а не одним флагом на канал.
-        # КРИТИЧНО: таймер заводится только для постов регулярной генерации по
-        # расписанию (tick -> generate_for_channel без force_pending). Посты,
-        # созданные вручную ("Сгенерировать пост"), в онбординге и при
-        # догенерации резерва очереди (_refill_if_active), идут с
-        # force_pending=True и таймера НЕ имеют -- они ждут решения
-        # пользователя сколько угодно долго. Раньше очередь показывала общее
-        # обещание "опубликуется сам через 30 мин" на уровне всего канала, и
+        # КРИТИЧНО: таймер заводится только в режиме подтверждения, и только
+        # если карточка реально доставлена в Telegram (см. _send_approval_card
+        # в tasks.py) -- иначе пост ждёт решения без таймера сколько угодно.
+        # Раньше очередь показывала общее обещание "опубликуется сам через 30
+        # мин" на уровне всего канала, и
         # для большинства постов это была неправда.
         deadlines = {
             a.post_id: a.deadline.isoformat() + "Z"
@@ -1296,7 +1359,7 @@ async def reject_post(post_id: int, user: User = Depends(current_user)):
         p.status = "rejected"
         s.add(p); s.commit()
     tasks.cancel_pending_approval(post_id)
-    await tasks._refill_if_active(channel_id)
+    await tasks._refill_queue(channel_id)
     return {"ok": True}
 
 
@@ -1307,7 +1370,7 @@ async def delete_post(post_id: int, user: User = Depends(current_user)):
         channel_id = p.channel_id
         s.delete(p); s.commit()
     tasks.cancel_pending_approval(post_id)
-    await tasks._refill_if_active(channel_id)
+    await tasks._refill_queue(channel_id)
     return {"ok": True}
 
 
@@ -1421,6 +1484,39 @@ async def payments(user: User = Depends(current_user)):
         return [p.model_dump() for p in ps]
 
 
+def _find_refundable_payment(s, user_id: int) -> tuple[Payment | None, str | None]:
+    """
+    Последний оплаченный платёж пользователя и причина, по которой его нельзя
+    вернуть автоматически (None -- можно).
+
+    Условия -- те же три дня и "токены не использовались", что написаны в
+    static/legal/refund.html, только проверяются кодом, а не человеком на
+    слово. "Использовались" проверяем буквально по документу: появился ли
+    после оплаты хоть один пост (Post.created_at > paid_at) -- не пытаемся
+    точно приписать конкретные токены конкретной оплате (баланс общий,
+    пополняется из нескольких источников), это ровно то же упрощение, что и
+    в перерасчёте при апгрейде тарифа.
+    """
+    pay = s.exec(
+        select(Payment).where(Payment.user_id == user_id, Payment.status == "paid")
+        .order_by(Payment.created_at.desc())
+    ).first()
+    if not pay:
+        return None, "Оплаченных платежей нет"
+    if not pay.paid_at:
+        return pay, "Платёж ещё не подтверждён"
+    if datetime.utcnow() - pay.paid_at > timedelta(days=config.REFUND_WINDOW_DAYS):
+        return pay, f"С момента оплаты прошло больше {config.REFUND_WINDOW_DAYS} дней"
+    used = s.exec(
+        select(Post).where(Post.user_id == user_id, Post.created_at > pay.paid_at)
+    ).first()
+    if used:
+        return pay, "После оплаты уже был создан пост"
+    if not pay.operation_id:
+        return pay, "У платежа нет номера ЮKassa"
+    return pay, None
+
+
 @app.get("/api/subscription")
 def get_subscription(user: User = Depends(current_user)):
     """Текущая подписка пользователя (или none, если её нет)."""
@@ -1435,6 +1531,7 @@ def get_subscription(user: User = Depends(current_user)):
         if not sub:
             return {"subscription": None, "payment_method": None}
         pkg = config.package_by_id(sub.package_id) or {}
+        payment, refund_blocked_reason = _find_refundable_payment(s, user.id)
         return {"payment_method": ({
             "title": sub.payment_method_title or "Сохранённый способ оплаты",
         } if sub.payment_method_id else None), "subscription": {
@@ -1450,6 +1547,10 @@ def get_subscription(user: User = Depends(current_user)):
             "period_days": config.SUBSCRIPTION_PERIOD_DAYS,
             "next_charge_at": sub.next_charge_at.isoformat() + "Z" if sub.next_charge_at else None,
             "last_error": sub.last_error,
+            "refund_eligible": bool(payment and not refund_blocked_reason),
+            "refund_reason": refund_blocked_reason,
+            "refund_amount_rub": payment.rub if (payment and not refund_blocked_reason) else None,
+            "refund_window_days": config.REFUND_WINDOW_DAYS,
         }}
 
 
@@ -1491,6 +1592,77 @@ def cancel_subscription(user: User = Depends(current_user)):
             f"сохранённый способ оплаты отвязан"
         )
     return {"ok": True}
+
+
+@app.post("/api/subscription/refund")
+async def refund_subscription(user: User = Depends(current_user)):
+    """
+    Самообслуживаемый возврат последнего платежа + отмена подписки.
+
+    Решение владельца 31.07: основной способ возврата -- эта кнопка, а не
+    письмо на почту, потому что владелец может не увидеть письмо вовремя и
+    потом придётся спорить с человеком, который не уложился в обещанный день
+    ответа. Условия ровно те же, что в static/legal/refund.html (3 дня,
+    токены не тронуты) -- проверяет `_find_refundable_payment`, здесь же и
+    показывается причина отказа, если возврат недоступен.
+
+    Подписка гасится сразу же вместе с возвратом -- нельзя вернуть деньги за
+    период и продолжать им пользоваться.
+    """
+    from database import Subscription
+    with session() as s:
+        sub = s.exec(select(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(["active", "suspended"]),
+        )).first()
+        if not sub:
+            raise HTTPException(400, "Активной подписки нет")
+        payment, reason = _find_refundable_payment(s, user.id)
+        if not payment or reason:
+            raise HTTPException(400, reason or "Возврат недоступен")
+        payment_pk = payment.id
+        operation_id = payment.operation_id
+        rub = payment.rub
+        tokens = payment.tokens
+        sub_id = sub.id
+
+    idempotence_key = f"refund-{payment_pk}"
+    try:
+        result = await billing.refund_payment(
+            payment_operation_id=operation_id, amount_rub=rub, idempotence_key=idempotence_key,
+        )
+    except billing.YooKassaError as exc:
+        raise HTTPException(400, f"Не удалось оформить возврат: {exc}")
+
+    if result.get("status") not in ("succeeded", "pending"):
+        raise HTTPException(400, "ЮKassa не подтвердила возврат. Попробуйте ещё раз позже или напишите в поддержку.")
+
+    with session() as s:
+        pay = s.get(Payment, payment_pk)
+        if pay:
+            pay.status = "refunded"
+            s.add(pay)
+        u = s.get(User, user.id)
+        if u:
+            # Общий баланс, не привязка к конкретной оплате (та же оговорка,
+            # что и в перерасчёте апгрейда) -- отнимаем ровно столько, сколько
+            # эта оплата дала, но не уходим в минус.
+            u.token_balance = max(0, u.token_balance - tokens)
+            s.add(u)
+        sub = s.get(Subscription, sub_id)
+        if sub:
+            sub.status = "cancelled"
+            sub.cancelled_at = datetime.utcnow()
+            sub.next_charge_at = None
+            sub.payment_method_id = ""
+            s.add(sub)
+        s.commit()
+
+    logger.info(
+        "Возврат: пользователь %s, платёж %s, %s ₽, подписка отменена",
+        user.id, payment_pk, rub,
+    )
+    return {"ok": True, "refunded_rub": rub}
 
 
 @app.post("/api/subscription/upgrade")
@@ -2126,6 +2298,7 @@ def patch_me(data: _MePatch, user: User = Depends(current_user)):
         u = s.get(User, user.id)
         if data.notify_new_post is not None: u.notify_new_post = data.notify_new_post
         if data.notify_published is not None: u.notify_published = data.notify_published
+        if data.notify_approval_pending is not None: u.notify_approval_pending = data.notify_approval_pending
         if data.notify_low_tokens is not None: u.notify_low_tokens = data.notify_low_tokens
         if data.tg_chat_id is not None: u.tg_chat_id = data.tg_chat_id
         s.add(u); s.commit()
