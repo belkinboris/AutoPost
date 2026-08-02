@@ -544,6 +544,14 @@ def due_scheduled_posts(s: Session, now: datetime) -> list[Post]:
     Проверка по PostApproval.status=="waiting" оставлена ДОПОЛНИТЕЛЬНО --
     защищает от узкого случая переключения канала на автопилот, пока у уже
     стоящего в очереди поста ещё висит неразрешённое подтверждение.
+
+    КРИТИЧНО (найдено 02.08 при разборе прод-инцидента с интервалом): без
+    фильтра по Channel.enabled пауза канала не останавливала уже
+    запланированные посты -- она лишь останавливает _refill_queue (новую
+    генерацию), а due_scheduled_posts публиковал бы и дальше то, что уже
+    стоит в очереди. Интерфейс при этом прямо обещает "Новые посты не
+    создаются и не публикуются, пока канал на паузе" (app.part11.js) --
+    без этого фильтра обещание было бы неправдой (правило 5 в CLAUDE.md).
     """
     awaiting_ids = {
         pid for pid in s.exec(
@@ -552,7 +560,10 @@ def due_scheduled_posts(s: Session, now: datetime) -> list[Post]:
     }
     posts = s.exec(
         select(Post).join(Channel, Channel.id == Post.channel_id)
-        .where(Post.status == "scheduled", Post.scheduled_at <= now, Channel.auto_publish == True)  # noqa: E712
+        .where(
+            Post.status == "scheduled", Post.scheduled_at <= now,
+            Channel.auto_publish == True, Channel.enabled == True,  # noqa: E712
+        )
     ).all()
     return [p for p in posts if p.id not in awaiting_ids]
 

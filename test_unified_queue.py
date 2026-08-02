@@ -115,16 +115,35 @@ async def test_next_queue_slot_steps_after_last_queued_post():
     assert got == last_slot + timedelta(hours=2)
 
 
-async def test_next_queue_slot_ignores_past_last_slot():
-    """Если последний слот уже в прошлом (тик отстал), новый пост встаёт от «сейчас», а не наследует просрочку."""
-    uid, cid = _make_channel("slot_past_last@t.local", auto_publish=True)
+async def test_next_queue_slot_chains_from_overdue_last_slot():
+    """
+    Прод-инцидент 02.08 (найден владельцем в день выкладки): раньше просроченный
+    последний слот считался "как будто очереди нет" -- новый пост планировался
+    от "сейчас" вместо продолжения интервала. Для автопилота с
+    MAX_GEN_PER_TICK=1 это происходило КАЖДЫЙ раз при публикации (пост
+    публикуется ровно когда его scheduled_at уже <= now, то есть уже
+    "просрочен" в момент, когда _refill_queue готовит следующий) -- интервал
+    канала (например, раз в сутки) схлопывался до частоты тика (обычно 60с),
+    токены сгорали впустую на посты каждую минуту. Правильно: пока в очереди
+    есть хоть один "scheduled" пост -- новый планируется от него
+    (_next_slot_after), даже если его время уже наступило или чуть прошло.
+    "Пусто" -- это ноль постов со статусом scheduled, а не "время последнего прошло".
+    """
+    uid, cid = _make_channel("slot_past_last@t.local", auto_publish=True,
+                              schedule_kind="interval", interval_hours=24)
+    overdue_at = datetime.utcnow() - timedelta(seconds=30)
     with database.session() as s:
         s.add(Post(channel_id=cid, user_id=uid, text="просрочен", status="scheduled",
-                    scheduled_at=datetime.utcnow() - timedelta(hours=1)))
+                    scheduled_at=overdue_at))
         s.commit()
         ch = s.get(Channel, cid)
         got = tasks._next_queue_slot(s, ch)
-    assert abs((got - datetime.utcnow()).total_seconds()) < 5
+    assert got == overdue_at + timedelta(hours=24), (
+        "новый пост должен продолжить интервал от просроченного слота, а не спланироваться на «сейчас»"
+    )
+    # Действительно пустая очередь (ни одного scheduled поста вообще) --
+    # это другое дело и по-прежнему "сейчас" для автопилота, см.
+    # test_next_queue_slot_empty_queue_autopilot_is_now выше.
 
 
 # ── due_scheduled_posts: подтверждение исключает пост из общей публикации ──
@@ -139,6 +158,24 @@ async def test_due_scheduled_posts_includes_autopilot_without_approval():
         pid = p.id
         due_ids = {row.id for row in due_scheduled_posts(s, datetime.utcnow())}
     assert pid in due_ids
+
+
+async def test_due_scheduled_posts_excludes_disabled_channel():
+    """
+    Прод-инцидент 02.08: без фильтра по Channel.enabled пауза канала не
+    останавливала уже запланированные посты -- останавливала только
+    _refill_queue (новую генерацию). Интерфейс прямо обещает "не
+    публикуется, пока канал на паузе" (app.part11.js) -- это должно быть
+    правдой и для постов, вставших в очередь ДО постановки на паузу.
+    """
+    uid, cid = _make_channel("due_disabled@t.local", auto_publish=True, enabled=False)
+    past = datetime.utcnow() - timedelta(minutes=1)
+    with database.session() as s:
+        p = Post(channel_id=cid, user_id=uid, text="на паузе", status="scheduled", scheduled_at=past)
+        s.add(p); s.commit(); s.refresh(p)
+        pid = p.id
+        due_ids = {row.id for row in due_scheduled_posts(s, datetime.utcnow())}
+    assert pid not in due_ids, "канал на паузе не должен публиковать даже уже запланированные посты"
 
 
 async def test_due_scheduled_posts_excludes_confirm_mode_even_without_approval():
