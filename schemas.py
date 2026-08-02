@@ -41,6 +41,14 @@ class ChannelIn(BaseModel):
     schedule_kind: str = "interval"
     interval_hours: float = 12
     daily_times: list[str] = ["10:00"]
+    # Окно публикации и разброс. Аудит 02.08: этих полей не было НИ в
+    # ChannelIn, НИ в ChannelPatch -- фронт их отправлял, pydantic молча
+    # выбрасывал, PATCH отвечал 200 и рисовал «Сохранено ✓», а значение
+    # оставалось пустым. Настройка «Пишем и публикуем посты только в это
+    # время» не работала никогда и не могла заработать (правило 5).
+    publish_window_start: str = ""
+    publish_window_end: str = ""
+    interval_jitter_minutes: int = 0
     channel_type: str = "thematic"
     enabled: bool = True
     onboarded: bool = False
@@ -64,6 +72,9 @@ class ChannelPatch(BaseModel):
     auto_publish: Optional[bool] = None
     schedule_kind: Optional[str] = None
     interval_hours: Optional[float] = None
+    publish_window_start: Optional[str] = None
+    publish_window_end: Optional[str] = None
+    interval_jitter_minutes: Optional[int] = None
     daily_times: Optional[list[str]] = None
     channel_type: Optional[str] = None
     enabled: Optional[bool] = None

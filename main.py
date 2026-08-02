@@ -28,6 +28,7 @@ from database import (
     init_db, session,
     User, Channel, Source, Post, Payment, Referral, LandingEvent, IdempotencyKey, ProductEvent,
     TrafficAttribution, PostApproval, TelegramIdentity, PostFeedback,
+    claim_payment_for_credit,
 )
 from attribution import classify_utm
 from pydantic import BaseModel as _BaseModel
@@ -77,6 +78,15 @@ except ImportError:
 async def lifespan(app: FastAPI):
     init_db()
     logger.info("БД готова")
+    # Разовая идемпотентная починка данных, накопленных прошлыми версиями
+    # (аудит 02.08): незакрытые подтверждения на автопилот-каналах, посты,
+    # застрявшие в "pending" ещё до C14, зависшие захваты публикации.
+    # Если чинить нечего -- не делает ни одной записи. Ошибка здесь не должна
+    # мешать приложению подняться.
+    try:
+        await tasks.backfill_orphaned_posts()
+    except Exception:
+        logger.exception("backfill_orphaned_posts на старте не отработал")
     if _HAS_SCHEDULER and _scheduler:
         _scheduler.add_job(
             tasks.tick, "interval", seconds=config.TICK_SECONDS,
@@ -682,6 +692,7 @@ def _channel_dict(s, ch: Channel) -> dict:
     # СЛЕДУЮЩЕГО канала в списке, та же сессия s) тоже упадёт с
     # "current transaction is aborted", даже если сам по себе он корректен.
     d["next_post_preview"] = None
+    d["next_post_at"] = None
     d["queue_count"] = 0
     d["published_count"] = 0
     d["approval_deadline"] = None
@@ -695,6 +706,11 @@ def _channel_dict(s, ch: Channel) -> dict:
     # честно показать, докуда вообще можно увеличивать (C14, владелец 01.08).
     d["queue_target"] = tasks.MIN_QUEUE
     d["queue_ceiling"] = tasks.MIN_QUEUE
+    # Нижняя граница степпера приходит с сервера по той же причине, что и
+    # потолок: раньше фронт рисовал варианты списком [3,4,5,6,7], записанным
+    # руками, и после снижения минимума до 1 они разошлись бы с зажимом в
+    # patch_channel молча -- кнопка была бы, а значение не сохранялось бы.
+    d["queue_min_depth"] = tasks.MIN_QUEUE_DEPTH
     try:
         d["queue_target"] = tasks.queue_target_for_user(s, ch.user_id, ch)
         d["queue_ceiling"] = tasks.queue_target_for_user(s, ch.user_id)
@@ -712,6 +728,13 @@ def _channel_dict(s, ch: Channel) -> dict:
             .order_by(Post.scheduled_at.is_(None).asc(), Post.scheduled_at, Post.created_at)
         ).first()
         d["next_post_preview"] = generator._clean_post(next_post.text)[:220] if next_post else None
+        # Время ближайшего поста в очереди. Нужно карточке на дашборде, чтобы
+        # честно ответить «когда мы напишем следующий пост»: при полной
+        # очереди новый появится не «через интервал от последней генерации»
+        # (такой формулы в коде нет вообще), а когда освободится место --
+        # то есть после этой самой ближайшей публикации (аудит 02.08).
+        if next_post and next_post.scheduled_at:
+            d["next_post_at"] = next_post.scheduled_at.isoformat() + "Z"
         d["queue_count"] = len(s.exec(
             select(Post).where(Post.channel_id == ch.id, Post.status.in_(["pending", "scheduled"]))
         ).all())
@@ -914,15 +937,37 @@ async def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depend
             # Сбрасываем verified только если реально поменялся username
             if new_chat != (ch.tg_chat or ""):
                 ch.verified = False
+        # Окно публикации: принимаем только "ЧЧ:ММ" или пустую строку. Кривое
+        # значение молча не сохраняем -- иначе экран показал бы «Сохранено ✓»
+        # рядом с полем, которое ни на что не влияет (ровно та беда, из-за
+        # которой эта настройка не работала вовсе).
+        for _win_field in ("publish_window_start", "publish_window_end"):
+            if _win_field in payload:
+                raw = (payload[_win_field] or "").strip()
+                if raw:
+                    try:
+                        hh, mm = map(int, raw.split(":"))
+                        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                            raise ValueError
+                        payload[_win_field] = f"{hh:02d}:{mm:02d}"
+                    except Exception:
+                        raise HTTPException(400, "Время окна публикации должно быть в формате ЧЧ:ММ")
+                else:
+                    payload[_win_field] = ""
+        if "interval_jitter_minutes" in payload:
+            payload["interval_jitter_minutes"] = max(0, min(int(payload["interval_jitter_minutes"]), 120))
         if "queue_depth" in payload:
             # Настраиваемая глубина очереди (C14, владелец 01.08): зажимаем
-            # в [MIN_QUEUE, потолок тарифа] здесь же, при записи -- иначе
-            # бесплатный пользователь мог бы сохранить queue_depth=7, который
-            # молча ничего не делает (queue_target_for_user всё равно обрежет
-            # его до потолка при чтении), и не понимать, почему очередь не
-            # растёт (правило 5: интерфейс не обещает того, чего нет).
+            # в [MIN_QUEUE_DEPTH, потолок тарифа] здесь же, при записи --
+            # иначе бесплатный пользователь мог бы сохранить queue_depth=7,
+            # который молча ничего не делает (queue_target_for_user всё равно
+            # обрежет его до потолка при чтении), и не понимать, почему
+            # очередь не растёт (правило 5: интерфейс не обещает того, чего
+            # нет). Нижняя граница -- 1: владелец 02.08 попросил разрешить
+            # «держать наготове ровно один пост».
             ceiling = tasks.queue_target_for_user(s, user.id)
-            payload["queue_depth"] = max(tasks.MIN_QUEUE, min(payload["queue_depth"], ceiling))
+            payload["queue_depth"] = max(tasks.MIN_QUEUE_DEPTH,
+                                         min(payload["queue_depth"], ceiling))
         # При возобновлении ставим last_generated_at = now
         # чтобы следующая авто-генерация была через полный интервал, а не немедленно
         if payload.get("enabled") is True and not ch.enabled:
@@ -1058,8 +1103,21 @@ async def generate_channel(channel_id: int, data: PostIn = PostIn(), user: User 
         if target_scheduled_at <= datetime.utcnow():
             raise HTTPException(400, "Выберите время в будущем")
 
-    result = await tasks.generate_for_channel(channel_id, topic=data.topic, target_scheduled_at=target_scheduled_at)
+    # Явный выбор времени -- это осознанная вставка в конкретное место
+    # очереди, а не «долей до глубины»: глубину в этом случае не проверяем,
+    # иначе кнопка с пикером молча отказывала бы при полной очереди.
+    result = await tasks.generate_for_channel(
+        channel_id, topic=data.topic, target_scheduled_at=target_scheduled_at,
+        respect_queue_depth=(target_scheduled_at is None),
+    )
     if not result["ok"]:
+        # Человеческие тексты для двух новых отказов: это не поломка, а
+        # нормальное состояние системы, и оно должно читаться именно так
+        # (правило 5 -- интерфейс объясняет, что происходит).
+        if result.get("already_generating"):
+            raise HTTPException(409, "Пост для этого канала уже пишется — подождите, он вот-вот появится в очереди.")
+        if result.get("queue_full"):
+            raise HTTPException(409, "Очередь уже заполнена. Опубликуйте или отклоните пост — и мы напишем следующий.")
         raise HTTPException(400, result["message"])
     return result
 
@@ -1084,7 +1142,11 @@ async def generate_channel_format(
         s.commit()
 
     try:
-        result = await tasks.generate_for_channel(channel_id, force_pending=True)
+        # Онбординг: первый черновик показывается до того, как у канала вообще
+        # есть очередь -- проверка глубины здесь не применяется осознанно.
+        result = await tasks.generate_for_channel(
+            channel_id, force_pending=True, respect_queue_depth=False,
+        )
     finally:
         # Возвращаем оригинальный формат
         with session() as s:
@@ -1296,7 +1358,16 @@ def schedule_preview(channel_id: int, user: User = Depends(current_user)):
         # которые не наступят, был бы обманом, а не прогнозом.
         if not ch.auto_publish or not ch.verified or not ch.enabled:
             return {"slots": []}
-        slots = tasks.project_upcoming_slots(ch, datetime.utcnow(), count=30)
+        # Прогноз продолжает очередь, а не считает параллельно ей: точка
+        # отсчёта -- время последнего уже запланированного поста, ровно как в
+        # tasks._next_queue_slot. Без этого календарь показывал «ожидается по
+        # расписанию» на днях, где уже стоят настоящие посты (аудит 02.08).
+        last = s.exec(
+            select(Post).where(Post.channel_id == ch.id, Post.status == "scheduled")
+            .order_by(Post.scheduled_at.desc())
+        ).first()
+        anchor = last.scheduled_at if last and last.scheduled_at else None
+        slots = tasks.project_upcoming_slots(ch, datetime.utcnow(), count=30, anchor=anchor)
         return {"slots": [s.isoformat() + "Z" for s in slots]}
 
 
@@ -1371,25 +1442,50 @@ async def schedule_post(post_id: int, data: ScheduleIn, user: User = Depends(cur
 
 
 @app.post("/api/posts/{post_id}/reject")
-async def reject_post(post_id: int, user: User = Depends(current_user)):
+async def reject_post(post_id: int, background_tasks: BackgroundTasks, user: User = Depends(current_user)):
     with session() as s:
         p = _own_post(s, post_id, user)
         channel_id = p.channel_id
+        if p.status in ("published", "rejected"):
+            # Повторное нажатие (кнопка не блокировалась, ответ шёл долго) не
+            # должно ни менять решение, ни запускать ещё одну догенерацию.
+            return {"ok": True, "already_done": True}
         p.status = "rejected"
         s.add(p); s.commit()
     tasks.cancel_pending_approval(post_id)
-    await tasks._refill_queue(channel_id)
+    # КРИТИЧНО (аудит 02.08): раньше здесь стоял `await tasks._refill_queue(...)`
+    # -- ручка держала HTTP-ответ всю генерацию замены (десятки секунд), и на
+    # экране «ничего не происходило», пока человек не обновит страницу. Ровно
+    # эту ошибку уже чинили в publish_post; здесь она осталась.
+    background_tasks.add_task(tasks._refill_queue, channel_id)
     return {"ok": True}
 
 
 @app.delete("/api/posts/{post_id}")
-async def delete_post(post_id: int, user: User = Depends(current_user)):
+async def delete_post(post_id: int, background_tasks: BackgroundTasks, user: User = Depends(current_user)):
     with session() as s:
         p = _own_post(s, post_id, user)
         channel_id = p.channel_id
+        # КРИТИЧНО (правило 3, найдено аудитом 02.08): PostApproval держит FK на
+        # post.id, а cancel_pending_approval только меняет статус, строку не
+        # удаляет -- поэтому DELETE падал с нарушением внешнего ключа (500) на
+        # любом посте, у которого КОГДА-ЛИБО было подтверждение, включая уже
+        # закрытые. Тот же класс бага, что трижды ловили в delete_account и
+        # один раз в delete_channel. flush() до удаления самого поста
+        # обязателен: без explicit relationship() SQLAlchemy не гарантирует
+        # порядок DELETE внутри одной транзакции, а SQLite проверяет FK на
+        # каждый оператор.
+        for appr in s.exec(select(PostApproval).where(PostApproval.post_id == post_id)).all():
+            s.delete(appr)
+        s.flush()
+        for fb in s.exec(select(PostFeedback).where(PostFeedback.post_id == post_id)).all():
+            s.delete(fb)
+        s.flush()
         s.delete(p); s.commit()
-    tasks.cancel_pending_approval(post_id)
-    await tasks._refill_queue(channel_id)
+    # Догенерация -- в фоне, не держим HTTP-ответ на время работы модели
+    # (та же причина, что и в publish_post: раньше ответ ждал десятки секунд,
+    # и на экране «ничего не происходило»).
+    background_tasks.add_task(tasks._refill_queue, channel_id)
     return {"ok": True}
 
 
@@ -1466,15 +1562,16 @@ async def _sync_yookassa_pending_payments(user_id: int) -> None:
                 )
                 continue
 
-            if pay.status != "paid":
-                pay.status = "paid"
-                pay.paid_at = datetime.utcnow()
+            # Правило 7 (деньги): захват атомарный. Раньше здесь стояло
+            # `if pay.status != "paid"`, и тот же платёж мог быть зачтён
+            # параллельно вебхуком (он ретраится) -- оба пути проходили
+            # проверку и начисляли токены дважды.
+            if claim_payment_for_credit(s, pay.id):
                 u = s.get(User, pay.user_id)
                 if u:
                     u.token_balance += pay.tokens
                     s.add(u)
-                s.add(pay)
-                s.commit()
+                    s.commit()
                 logger.info(
                     "Платёж YooKassa зачтён через sync: пользователь %s +%s токенов",
                     pay.user_id, pay.tokens,
@@ -2036,15 +2133,15 @@ async def yookassa_notify(request: Request):
             )
             return PlainTextResponse("OK", status_code=200)
 
-        if pay.status != "paid":
-            pay.status = "paid"
-            pay.paid_at = datetime.utcnow()
+        # Правило 7 (деньги): захват атомарный, см. claim_payment_for_credit.
+        # ЮKassa ретраит вебхук, а /api/payments параллельно дёргает
+        # _sync_yookassa_pending_payments -- раньше оба начисляли токены.
+        if claim_payment_for_credit(s, pay.id):
             u = s.get(User, pay.user_id)
             if u:
                 u.token_balance += pay.tokens
                 s.add(u)
-            s.add(pay)
-            s.commit()
+                s.commit()
             logger.info("Платёж YooKassa зачтён: пользователь %s +%s токенов", pay.user_id, pay.tokens)
             _activate_subscription(s, pay, yk_payment)
             credited_user_id = pay.user_id

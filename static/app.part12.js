@@ -1,7 +1,14 @@
 
 
 async function testPost(){
-  const btn=$("testBtn");btn.innerHTML='<span class="spinner"></span>';btn.disabled=true;
+  const btn=$("testBtn");
+  // Запоминаем подпись, а не пишем её здесь заново: в разметке кнопка
+  // называется «▷ Написать пост сейчас», а восстанавливалась как «▷ Создать
+  // тестовый пост» -- старое название, которого нет больше нигде. После
+  // первого же нажатия кнопка переименовывалась сама, и человек не понимал,
+  // тестовый это пост или настоящий (он настоящий: встаёт в очередь).
+  const label=btn.innerHTML;
+  btn.innerHTML='<span class="spinner"></span>';btn.disabled=true;
   await _silentSave();
   try{
     const r=await api("POST","/channels/"+App._chan.id+"/generate",{});
@@ -20,7 +27,7 @@ async function testPost(){
         <button class="btn-danger btn-sm" onclick="rejectPost(${p.id})">Отклонить</button>
       </div></div>`;
   }catch(e){toast(e&&e.message?e.message:"Ошибка запроса","err");}
-  btn.innerHTML="▷ Создать тестовый пост";btn.disabled=false;
+  btn.innerHTML=label;btn.disabled=false;
 }
 
 // ADVANCED

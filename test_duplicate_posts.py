@@ -135,16 +135,56 @@ def test_stemming_is_what_makes_it_work():
     )
 
 
-def test_stem_length_change_is_noticed():
+def test_short_words_are_actually_stemmed():
     """
-    _STEM_LEN подобран вручную. Слишком длинная основа перестаёт склеивать
-    формы, слишком короткая склеивает несвязанные слова. Проверяем, что
-    текущее значение действительно лучше соседних для нашей задачи:
-    близнецы должны оставаться выше порога.
+    Аудит 02.08: при _STEM_LEN=6 усечение не делало НИЧЕГО для слов из 5-6
+    букв -- а это самые содержательные признаки «пост про то же самое».
+    «Путин»/«Путина», «друг»/«друга», «двор»/«двора» оставались разными
+    токенами, то есть два сильнейших сигнала не засчитывались вовсе.
     """
-    assert tasks._STEM_LEN == 6, "значение изменили -- перепроверьте калибровку порога"
-    twins = _similarity(TWIN_A, TWIN_B)
-    assert twins >= DUPLICATE_THRESHOLD
+    for base, inflected in [("путин", "путина"), ("друг", "друга"),
+                             ("двор", "двора"), ("школа", "школы")]:
+        assert _content_words(base) == _content_words(inflected), (
+            f"«{base}» и «{inflected}» считаются разными словами -- "
+            f"детектор не увидит, что посты про одно и то же"
+        )
+
+    # Честное ограничение метода: беглая гласная («отец»/«отца») префиксным
+    # усечением не склеивается ни при какой длине основы. Лечится только
+    # настоящей лемматизацией (словарь/pymorphy) -- отдельная зависимость,
+    # которую сюда не тянем. Фиксируем как известную дыру, а не как «работает».
+    assert _content_words("отец") != _content_words("отца")
+
+
+def test_storytelling_twins_are_caught():
+    """
+    Реальная пара с прода 02.08, которую владелец увидел в своей очереди:
+    один и тот же эпизод биографии, пересказанный другими словами. Жаккар на
+    ней давал 0.080 при пороге 0.10 -- пропуск. Именно ради таких пар
+    добавлен коэффициент перекрытия.
+    """
+    a = ("Он выходил один против пятерых. И не боялся.\n\n"
+         "Вот вам история, которую я недавно нашел в воспоминаниях друга детства Путина. "
+         "Владимир Владимирович с ранних лет не давал себя в обиду: если задирали во дворе, "
+         "отвечал сразу, не считая, сколько человек против него.")
+    b = ("Он не боялся выйти один против пятерых. И это не про политику\n\n"
+         "В школе Володя Путин не был драчуном, но и спуску не давал. Его друг детства вспоминал: "
+         "во дворе мальчишки быстро поняли, что связываться не стоит -- характер проявился рано, "
+         "и отвечал он сразу, даже если противников было пятеро.")
+    assert tasks._is_duplicate(a, b), (
+        f"пара близнецов-сторителлинга не поймана: "
+        f"Жаккар {_similarity(a, b):.3f}, перекрытие {tasks._overlap(a, b):.3f}"
+    )
+
+
+def test_different_events_still_not_flagged_by_either_metric():
+    """Обратная сторона: смягчение метрики не должно начать браковать разные события."""
+    for i, first in enumerate(DIFFERENT):
+        for second in DIFFERENT[i + 1:]:
+            assert not tasks._is_duplicate(first, second), (
+                f"разные события помечены дублем: Жаккар {_similarity(first, second):.3f}, "
+                f"перекрытие {tasks._overlap(first, second):.3f}"
+            )
 
 
 # ── 3. Мелочи, на которых детектор мог бы молча сломаться ─────────────────
@@ -208,7 +248,7 @@ def _stub_generator(monkeypatch, texts):
 
     calls = []
 
-    async def _generate(channel, material, topic, rules_text, recent_titles):
+    async def _generate(channel, material, topic, rules_text, recent_titles, avoid_text=""):
         calls.append(topic)
         return texts[min(len(calls) - 1, len(texts) - 1)], 100
 
@@ -273,3 +313,79 @@ async def test_unique_post_does_not_trigger_retry(channel_with_post, monkeypatch
 def _count_posts(database, Post, select, channel_id: int) -> int:
     with database.session() as s:
         return len(s.exec(select(Post).where(Post.channel_id == channel_id)).all())
+
+
+# ── 5. Чужая письменность (аудит 02.08) ───────────────────────────────────
+
+def test_foreign_script_is_detected():
+    """
+    Реальный дефект с прода: «В 1989 году在东德 Дрездене Владимир Путин…».
+    Проверки языка в проекте не было ни одной -- ни на входе, ни на выходе.
+    """
+    assert tasks._foreign_script_chars("В 1989 году在东德 Дрездене") == "在东德"
+    assert tasks._foreign_script_chars("Обычный русский текст без вкраплений") == ""
+    assert tasks._foreign_script_chars("Latin text is fine too") == ""
+    # Одного символа достаточно: вкрапление всегда короткое, доля от длины
+    # текста его бы не поймала.
+    assert tasks._foreign_script_chars("Совершенно нормальный длинный русский пост про историю 中") == "中"
+
+
+def test_foreign_script_covers_main_scripts():
+    for sample in ["漢字", "ひらがな", "カタカナ", "한글", "العربية", "עברית", "ไทย"]:
+        assert tasks._foreign_script_chars(f"текст {sample} текст"), f"не поймано: {sample}"
+
+
+def test_search_snippets_with_foreign_script_are_dropped():
+    """Материал с иероглифами не должен доезжать до модели: промпт прямо требует «используй только эти факты»."""
+    import yandex_search
+    from datetime import datetime as _dt
+    results = [
+        {"title": "Путин в Дрездене", "snippet": "Обычный русский сниппет", "url": "u1", "modtime": None},
+        {"title": "在东德", "snippet": "иноязычный фрагмент", "url": "u2", "modtime": None},
+    ]
+    ctx = yandex_search.format_search_context(results)
+    assert "Обычный русский сниппет" in ctx
+    assert "在东德" not in ctx
+
+
+def test_twins_of_different_length_are_caught_by_overlap():
+    """
+    Один факт, но один пост короткий, другой длинный -- Жаккар такую пару
+    штрафует за разницу ОБЪЁМА, а не содержания (делит на объединение), и
+    даёт 0.071 при пороге 0.10, то есть пропускает. Ловит только перекрытие.
+    Асимметрия по длине реальна: формат story даёт длинные посты, news --
+    короткие, плюс у канала меняется настройка длины.
+    """
+    short = ("Путин в Дрездене спас архив от толпы.\n\n"
+             "В 1989 году к зданию советского представительства подошла толпа. "
+             "Офицер вышел один и сказал, что охрана будет стрелять. Толпа отступила.")
+    long = ("Как один человек остановил толпу у ворот\n\n"
+            "Декабрь восемьдесят девятого, Дрезден. Берлинская стена уже пала, здание Штази разгромлено, "
+            "и следующей целью становится соседнее представительство. Внутри жгут документы, печь не справляется. "
+            "К воротам выходит сотрудник и негромко предупреждает: люди внутри вооружены. "
+            "Слова звучат буднично, без угрозы, и именно это производит впечатление. Толпа расходится, бумаги уцелели. "
+            "Много лет спустя этот эпизод будут пересказывать как первое свидетельство характера.")
+
+    assert _similarity(short, long) < DUPLICATE_THRESHOLD, (
+        "предпосылка теста сломалась: Жаккар вдруг стал ловить эту пару, "
+        "тест перестал проверять именно перекрытие"
+    )
+    assert tasks._is_duplicate(short, long), (
+        f"пара разной длины про одно событие не поймана: "
+        f"Жаккар {_similarity(short, long):.3f}, перекрытие {tasks._overlap(short, long):.3f}"
+    )
+
+
+def test_overlap_threshold_keeps_headroom_from_different_events():
+    """Разрыв между близнецами и разными событиями должен оставаться кратным."""
+    worst_different = max(
+        tasks._overlap(a, b)
+        for a in DIFFERENT + [TWIN_A, TWIN_B]
+        for b in DIFFERENT
+        if a is not b
+    )
+    assert worst_different < tasks.DUPLICATE_OVERLAP_THRESHOLD, (
+        f"перекрытие разных событий {worst_different:.3f} дошло до порога "
+        f"{tasks.DUPLICATE_OVERLAP_THRESHOLD} -- начнутся ложные срабатывания"
+    )
+    assert tasks._overlap(TWIN_A, TWIN_B) > worst_different * 2

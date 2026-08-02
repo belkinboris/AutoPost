@@ -213,11 +213,22 @@ async def test_due_scheduled_posts_excludes_confirm_mode_with_resolved_approval(
     assert pid not in due_ids
 
 
-async def test_due_scheduled_posts_excludes_autopilot_with_leftover_waiting_approval():
+async def test_due_scheduled_posts_publishes_autopilot_despite_leftover_approval():
     """
-    Защита узкого случая: канал переключили на автопилот, пока у уже
-    стоящего в очереди поста ещё висело неразрешённое подтверждение с
-    прошлого режима -- публиковать его по тику молча всё равно нельзя.
+    ПОВЕДЕНИЕ ИЗМЕНЕНО ОСОЗНАННО (аудит 02.08, прод-инцидент).
+
+    Раньше здесь стояло обратное утверждение: пост с висящим подтверждением
+    на автопилот-канале НЕ публиковать. Задумывалось как защита («вдруг
+    переключили режим, пока подтверждение живо»), а на живом канале обернулось
+    худшим: такой пост не публиковался тут и одновременно бесконечно
+    переносился в конец очереди по дедлайну -- то есть не выходил НИКОГДА,
+    вечно занимал слот очереди и слал владельцу карточки «подтвердите» на
+    канал, где интерфейс обещает «подтверждать ничего не нужно».
+
+    Правильно: на автопилоте висящее подтверждение -- мусор от прошлого
+    режима, а не причина не публиковать. Мусор закрывают
+    sync_posts_to_channel_mode (при смене режима) и backfill_orphaned_posts
+    (для уже накопленного), а публикация идёт своим чередом.
     """
     uid, cid = _make_channel("due_switched@t.local", auto_publish=True)
     past = datetime.utcnow() - timedelta(minutes=1)
@@ -231,7 +242,27 @@ async def test_due_scheduled_posts_excludes_autopilot_with_leftover_waiting_appr
         s.commit()
 
         due_ids = {row.id for row in due_scheduled_posts(s, datetime.utcnow())}
-    assert pid not in due_ids
+    assert pid in due_ids, "пост автопилота не должен зависать из-за подтверждения от прошлого режима"
+
+
+async def test_due_post_approvals_skips_autopilot_channels():
+    """Обратная сторона того же: дедлайн подтверждения на автопилоте не должен ничего переносить."""
+    uid, cid = _make_channel("due_appr_auto@t.local", auto_publish=True)
+    past = datetime.utcnow() - timedelta(minutes=1)
+    with database.session() as s:
+        p = Post(channel_id=cid, user_id=uid, text="пост", status="scheduled", scheduled_at=past)
+        s.add(p); s.commit(); s.refresh(p)
+        s.add(PostApproval(post_id=p.id, channel_id=cid, review_chat_id=1,
+                            deadline=past, status="waiting"))
+        s.commit()
+        from database import due_post_approvals
+        # Фильтруем по своему каналу, а не сравниваем весь список с []:
+        # база в тестах общая, и глобальное «пусто» держалось только на том,
+        # что ни один другой тест не оставлял висящего подтверждения. Стоило
+        # появиться test_ui_promises.py с таблицей состояний -- и тест начал
+        # падать, ничего не сломав в коде. Это ловушка, а не проверка.
+        due = [a for a in due_post_approvals(s, datetime.utcnow()) if a.channel_id == cid]
+    assert due == [], "на автопилоте переносить по дедлайну нечего -- пост публикуется сам"
 
 
 # ── approvals_needing_warning: окно предупреждения ──────────────────────────
