@@ -1502,6 +1502,17 @@ PAID_QUEUE = 7       # "очередь на неделю" -- ровно то, ч
 # Очередь всё равно дособирается за несколько минут.
 MAX_GEN_PER_TICK = 1
 
+# За один тик публикуем не больше стольких постов НА КАНАЛ.
+#
+# Найдено владельцем 02.08: «7 постов опубликовалось за несколько минут».
+# Накопившаяся просрочка (канал стоял на паузе, сервер был недоступен, время
+# постов схлопнулось прошлым багом) выплёвывалась одним заходом -- подписчики
+# получали пачку постов подряд. Публикация задумана как «по одному, по
+# расписанию»; всплеск в ленте канала -- это ровно то, за что от канала
+# отписываются. Разбираем просрочку по одному посту за тик: через несколько
+# минут канал сам возвращается к нормальному ритму.
+MAX_PUBLISH_PER_TICK_PER_CHANNEL = 1
+
 
 def queue_target_for_user(s, user_id: int, channel: Optional[Channel] = None) -> int:
     """
@@ -1526,6 +1537,33 @@ def queue_target_for_user(s, user_id: int, channel: Optional[Channel] = None) ->
     if channel and channel.queue_depth:
         return max(MIN_QUEUE, min(channel.queue_depth, ceiling))
     return ceiling
+
+
+def _clamp_to_publish_window(channel: Channel, slot: datetime) -> datetime:
+    """
+    Двигает время внутрь окна публикации канала («Когда писать посты»).
+    Раньше эта арифметика жила только внутри _next_slot_after, из-за чего
+    первый пост в пустой очереди (там время бралось как «сейчас») выходил
+    в канал в любое время суток мимо окна -- аудит 02.08.
+
+    Окно без обоих концов -- ограничения нет. Кривые значения игнорируем
+    молча: настройка не должна уметь заблокировать публикацию совсем.
+    """
+    ws, we = channel.publish_window_start, channel.publish_window_end
+    if not (ws and we):
+        return slot
+    try:
+        wsh, wsm = map(int, ws.split(":"))
+        weh, wem = map(int, we.split(":"))
+    except Exception:
+        return slot
+    window_start = slot.replace(hour=wsh, minute=wsm, second=0, microsecond=0)
+    window_end = slot.replace(hour=weh, minute=wem, second=0, microsecond=0)
+    if slot < window_start:
+        return window_start
+    if slot > window_end:
+        return (slot + timedelta(days=1)).replace(hour=wsh, minute=wsm, second=0, microsecond=0)
+    return slot
 
 
 def _next_slot_after(channel: Channel, anchor: datetime) -> datetime:
@@ -1560,20 +1598,7 @@ def _next_slot_after(channel: Channel, anchor: datetime) -> datetime:
         return anchor + timedelta(hours=24)
 
     base_seconds = max(60, channel.interval_hours * 3600)
-    slot = anchor + timedelta(seconds=base_seconds)
-    ws, we = channel.publish_window_start, channel.publish_window_end
-    if ws and we:
-        try:
-            wsh, wsm = map(int, ws.split(":"))
-            weh, wem = map(int, we.split(":"))
-            window_start = slot.replace(hour=wsh, minute=wsm, second=0, microsecond=0)
-            window_end = slot.replace(hour=weh, minute=wem, second=0, microsecond=0)
-            if slot < window_start:
-                slot = window_start
-            elif slot > window_end:
-                slot = (slot + timedelta(days=1)).replace(hour=wsh, minute=wsm, second=0)
-        except Exception:
-            pass
+    slot = _clamp_to_publish_window(channel, anchor + timedelta(seconds=base_seconds))
     return slot
 
 
@@ -1611,9 +1636,15 @@ def _next_queue_slot(s, channel: Channel) -> datetime:
     ).first()
     if last and last.scheduled_at:
         return _next_slot_after(channel, last.scheduled_at)
-    if channel.auto_publish:
-        return now
-    return now + timedelta(minutes=config.SOFT_CONTROL_APPROVAL_MINUTES)
+
+    # Очередь пуста. Раньше здесь стояло голое `return now` для автопилота --
+    # и первый пост уходил подписчикам на ближайшем тике, в любое время
+    # суток, мимо окна публикации канала (аудит 02.08). Для человека, который
+    # только что подключил канал или пополнил баланс, это выглядит как
+    # «сервис постит когда попало», а обещание «каждые N часов» нарушается
+    # на самом первом посте. Первый пост тоже обязан попадать в окно.
+    base = now if channel.auto_publish else now + timedelta(minutes=config.SOFT_CONTROL_APPROVAL_MINUTES)
+    return _clamp_to_publish_window(channel, base)
 
 
 async def _refill_queue(channel_id: int):
@@ -1958,14 +1989,34 @@ async def tick():
         except Exception as e:
             logger.warning(f"queue-refill канал {cid}: {e}")
 
-    # Публикация: автопилот и явно запланированные ("Запланировать") посты.
-    # Посты режима подтверждения, ещё ожидающие решения, due_scheduled_posts
-    # сама исключает (см. database.py) -- их дедлайн обрабатывается ниже.
+    # Публикация: только автопилот (режим подтверждения через тик не
+    # публикуется никогда, см. database.due_scheduled_posts).
+    #
+    # КРИТИЧНО (аудит 02.08, жалоба владельца «7 постов за несколько минут»):
+    # не больше MAX_PUBLISH_PER_TICK_PER_CHANNEL постов на канал за тик. Если
+    # накопилась просрочка (канал стоял на паузе, сервер лежал, время постов
+    # схлопнулось прошлым багом), раньше тик выплёвывал ВСЮ пачку разом --
+    # подписчики получали несколько постов подряд за минуту. Просрочка
+    # разбирается по одному посту за тик: канал возвращается к нормальному
+    # ритму сам, без ручного вмешательства и без всплеска в ленте.
     with session() as s:
         from database import due_scheduled_posts
-        due_posts = [p.id for p in due_scheduled_posts(s, now)]
+        due_posts = due_scheduled_posts(s, now)
+        # Самые просроченные -- первыми, чтобы очередь разбиралась по порядку
+        due_posts.sort(key=lambda p: (p.scheduled_at or now))
+        by_channel: dict = {}
+        due_ids = []
+        for p in due_posts:
+            taken = by_channel.get(p.channel_id, 0)
+            if taken >= MAX_PUBLISH_PER_TICK_PER_CHANNEL:
+                continue
+            by_channel[p.channel_id] = taken + 1
+            due_ids.append(p.id)
+        skipped = len(due_posts) - len(due_ids)
+    if skipped:
+        logger.info(f"tick: отложено публикаций до следующего тика: {skipped} (защита от всплеска)")
 
-    for pid in due_posts:
+    for pid in due_ids:
         try:
             result = await publish_post(pid)
             if result.get("ok"):

@@ -318,3 +318,126 @@ async def test_requeue_does_nothing_on_autopilot_channel(monkeypatch):
     assert post.scheduled_at == slot, "время публикации на автопилоте меняться не должно"
     assert post.requeued_at is None, "красной плашки «не подтвердили» на автопилоте быть не может"
     assert appr.status == "done", "подтверждение должно закрыться, а не остаться крутиться"
+
+
+# ── Всплеск публикаций и первый пост ──────────────────────────────────────
+
+async def test_tick_publishes_backlog_one_per_channel_not_all_at_once(monkeypatch):
+    """
+    Жалоба владельца 02.08: «7 постов опубликовалось за несколько минут».
+    Накопившаяся просрочка выплёвывалась одним тиком -- подписчики получали
+    пачку постов подряд. Разбирать её надо по одному за тик.
+    """
+    sent = []
+    # Отдельный chat у этого канала: в общей тестовой базе есть посты других
+    # каналов, и считать надо только свои, иначе тест меряет чужой шум.
+    my_chat = "@burst_channel"
+
+    async def _send(chat, text, **kwargs):
+        if chat == my_chat:
+            sent.append(text)
+        return {"ok": True, "result": {"message_id": len(sent) + 1}}
+
+    async def _noop_refill(channel_id):
+        return None
+
+    monkeypatch.setattr(tasks.telegram_api, "send_message", _send)
+    monkeypatch.setattr(tasks, "_refill_queue", _noop_refill)
+    monkeypatch.setattr(tasks, "_process_bot_updates", lambda: asyncio.sleep(0))
+
+    uid = _make_user("burst@t.local")
+    cid = _make_channel(uid, auto_publish=True, tg_chat=my_chat)
+    past = datetime.utcnow() - timedelta(hours=5)
+    with database.session() as s:
+        for i in range(5):
+            s.add(Post(channel_id=cid, user_id=uid, text=f"просрочен {i}", status="scheduled",
+                        scheduled_at=past + timedelta(minutes=i)))
+        s.commit()
+
+    await tasks.tick()
+
+    assert len(sent) == 1, f"за один тик ушло {len(sent)} постов -- это всплеск в ленте канала"
+
+    # И убеждаемся, что остальные не потерялись: следующий тик берёт следующий
+    await tasks.tick()
+    assert len(sent) == 2, "просрочка должна разбираться дальше, по одному посту за тик"
+
+
+async def test_first_post_in_empty_queue_respects_publish_window():
+    """
+    Первый пост в пустой очереди получал время «прямо сейчас» и уходил в
+    любое время суток мимо окна публикации (аудит 02.08) -- то есть на самом
+    первом посте нарушалось и обещание «каждые N часов», и настройка окна.
+    """
+    uid = _make_user("window_first@t.local")
+    cid = _make_channel(uid, auto_publish=True,
+                        publish_window_start="09:00", publish_window_end="22:00")
+    with database.session() as s:
+        ch = s.get(Channel, cid)
+        slot = tasks._next_queue_slot(s, ch)
+    assert 9 <= slot.hour < 22, f"первый пост запланирован на {slot} -- вне окна 09:00-22:00"
+
+
+async def test_clamp_to_publish_window_moves_late_slot_to_next_morning():
+    ch = Channel(user_id=1, title="c", about="a",
+                 publish_window_start="09:00", publish_window_end="22:00")
+    late = datetime(2026, 8, 2, 23, 30)
+    got = tasks._clamp_to_publish_window(ch, late)
+    assert got == datetime(2026, 8, 3, 9, 0), got
+
+    early = datetime(2026, 8, 2, 3, 0)
+    assert tasks._clamp_to_publish_window(ch, early) == datetime(2026, 8, 2, 9, 0)
+
+    inside = datetime(2026, 8, 2, 12, 0)
+    assert tasks._clamp_to_publish_window(ch, inside) == inside
+
+
+async def test_generate_refuses_when_queue_already_full(monkeypatch):
+    """
+    У ручки «Написать пост сейчас» проверки глубины очереди не было вовсе --
+    кнопка в настройках канала доступна всегда и спокойно перебивала лимит.
+    """
+    called = []
+
+    async def _impl(channel_id, topic="", force_pending=False, target_scheduled_at=None):
+        called.append(channel_id)
+        return {"ok": True}
+
+    monkeypatch.setattr(tasks, "_generate_for_channel_impl", _impl)
+
+    uid = _make_user("full_queue@t.local")
+    cid = _make_channel(uid, auto_publish=True)
+    with database.session() as s:
+        for i in range(3):   # бесплатный потолок MIN_QUEUE=3
+            s.add(Post(channel_id=cid, user_id=uid, text=f"p{i}", status="scheduled",
+                        scheduled_at=datetime.utcnow() + timedelta(hours=i + 1)))
+        s.commit()
+
+    result = await tasks.generate_for_channel(cid)
+
+    assert result["ok"] is False
+    assert result.get("queue_full") is True
+    assert called == [], "генерация запустилась при уже полной очереди"
+
+
+async def test_onboarding_generation_ignores_queue_depth(monkeypatch):
+    """Онбординг показывает первый черновик до того, как у канала есть очередь."""
+    called = []
+
+    async def _impl(channel_id, topic="", force_pending=False, target_scheduled_at=None):
+        called.append(channel_id)
+        return {"ok": True}
+
+    monkeypatch.setattr(tasks, "_generate_for_channel_impl", _impl)
+
+    uid = _make_user("onboarding_depth@t.local")
+    cid = _make_channel(uid, auto_publish=True)
+    with database.session() as s:
+        for i in range(3):
+            s.add(Post(channel_id=cid, user_id=uid, text=f"p{i}", status="scheduled",
+                        scheduled_at=datetime.utcnow() + timedelta(hours=i + 1)))
+        s.commit()
+
+    result = await tasks.generate_for_channel(cid, force_pending=True, respect_queue_depth=False)
+    assert result["ok"] is True
+    assert called == [cid]

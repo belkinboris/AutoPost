@@ -1068,8 +1068,21 @@ async def generate_channel(channel_id: int, data: PostIn = PostIn(), user: User 
         if target_scheduled_at <= datetime.utcnow():
             raise HTTPException(400, "Выберите время в будущем")
 
-    result = await tasks.generate_for_channel(channel_id, topic=data.topic, target_scheduled_at=target_scheduled_at)
+    # Явный выбор времени -- это осознанная вставка в конкретное место
+    # очереди, а не «долей до глубины»: глубину в этом случае не проверяем,
+    # иначе кнопка с пикером молча отказывала бы при полной очереди.
+    result = await tasks.generate_for_channel(
+        channel_id, topic=data.topic, target_scheduled_at=target_scheduled_at,
+        respect_queue_depth=(target_scheduled_at is None),
+    )
     if not result["ok"]:
+        # Человеческие тексты для двух новых отказов: это не поломка, а
+        # нормальное состояние системы, и оно должно читаться именно так
+        # (правило 5 -- интерфейс объясняет, что происходит).
+        if result.get("already_generating"):
+            raise HTTPException(409, "Пост для этого канала уже пишется — подождите, он вот-вот появится в очереди.")
+        if result.get("queue_full"):
+            raise HTTPException(409, "Очередь уже заполнена. Опубликуйте или отклоните пост — и мы напишем следующий.")
         raise HTTPException(400, result["message"])
     return result
 
@@ -1094,7 +1107,11 @@ async def generate_channel_format(
         s.commit()
 
     try:
-        result = await tasks.generate_for_channel(channel_id, force_pending=True)
+        # Онбординг: первый черновик показывается до того, как у канала вообще
+        # есть очередь -- проверка глубины здесь не применяется осознанно.
+        result = await tasks.generate_for_channel(
+            channel_id, force_pending=True, respect_queue_depth=False,
+        )
     finally:
         # Возвращаем оригинальный формат
         with session() as s:

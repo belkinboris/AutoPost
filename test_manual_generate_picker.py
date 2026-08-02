@@ -112,7 +112,8 @@ async def _make_channel_http(client, token, auto_publish=True):
 def fake_generate(monkeypatch):
     calls = []
 
-    async def _fake(channel_id, topic="", force_pending=False, target_scheduled_at=None):
+    async def _fake(channel_id, topic="", force_pending=False, target_scheduled_at=None,
+                    respect_queue_depth=True):
         calls.append(target_scheduled_at)
         return {"ok": True, "post_id": None}
 

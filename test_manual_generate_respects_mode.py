@@ -37,7 +37,8 @@ async def _make_channel(client, token, auto_publish, tg_chat):
 def fake_generate(monkeypatch):
     calls = []
 
-    async def _fake(channel_id, topic="", force_pending=False, target_scheduled_at=None):
+    async def _fake(channel_id, topic="", force_pending=False, target_scheduled_at=None,
+                    respect_queue_depth=True):
         calls.append({"channel_id": channel_id, "force_pending": force_pending,
                        "target_scheduled_at": target_scheduled_at})
         return {"ok": True, "post_id": None}

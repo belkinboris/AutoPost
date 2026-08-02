@@ -3908,9 +3908,25 @@ async function _doPublishPost(id){
   tgHaptic("success");
   toast("Опубликовано ✓","ok");renderQueue();
 }
+// Действия над постом, которые нельзя запускать дважды. Владелец 02.08 жал
+// «Отклонить», ответа не было десятки секунд (ручка держала его на время
+// генерации замены -- это уже исправлено на бэкенде), он жал ещё раз, и
+// каждое нажатие запускало отдельную догенерацию. Здесь второй рубеж:
+// повторный клик по тому же посту просто игнорируется, пока идёт первый.
+const _postActionInFlight = {};
+
+async function _runPostAction(id, fn){
+  if(_postActionInFlight[id]) return;
+  _postActionInFlight[id] = true;
+  try{ await fn(); }
+  finally{ delete _postActionInFlight[id]; }
+}
+
 async function rejectPost(id){
-  try{await api("POST","/posts/"+id+"/reject");renderQueue();}
-  catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
+  await _runPostAction(id, async () => {
+    try{await api("POST","/posts/"+id+"/reject");await renderQueue();}
+    catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
+  });
 }
 
 // Оценка поста (👍/👎). Повторное нажатие по той же кнопке снимает оценку --
@@ -3936,16 +3952,32 @@ async function ratePost(id, verdict){
   }
 }
 async function deletePost(id){
-  try{await api("DELETE","/posts/"+id);renderQueue();}
-  catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
+  await _runPostAction(id, async () => {
+    try{await api("DELETE","/posts/"+id);await renderQueue();}
+    catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
+  });
 }
+
+// «Сгенерировать заново» = отклонить этот пост и получить взамен другой.
+//
+// КРИТИЧНО (аудит 02.08): раньше здесь стояло ДВА запроса подряд -- /reject,
+// а следом /generate. Но /reject на сервере сам догенерирует замену (очередь
+// стала на один пост короче), поэтому второй запрос добавлял ЛИШНИЙ пост:
+// каждое нажатие «Заново» гарантированно раздувало очередь на единицу, и оба
+// поста писались на одной поисковой выдаче -- то есть это была ещё и фабрика
+// постов-близнецов. Достаточно одного /reject.
+//
+// Спиннер рисуем в карточке поста, а не в кнопке меню: кнопка живёт внутри
+// меню, которое закрывается тем же кликом (closePostMenu), и спиннер в ней
+// был не виден в принципе -- для человека «нажал, ничего не произошло».
 async function regenPost(id){
-  const btn=$("regen_"+id);if(btn){btn.innerHTML='<span class="spinner"></span>';btn.disabled=true;}
-  try{
-    await api("POST","/posts/"+id+"/reject");
-    const r=await api("POST","/channels/"+App._chan.id+"/generate");
-    toast("Готово ✓","ok");renderQueue();
-  }catch(e){toast(e&&e.message?e.message:"Ошибка","err");if(btn){btn.innerHTML="↻ Заново";btn.disabled=false;}}
+  await _runPostAction(id, async () => {
+    toast("Пишем новый пост взамен…","ok");
+    try{
+      await api("POST","/posts/"+id+"/reject");
+      await renderQueue();
+    }catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
+  });
 }
 
 async function openTgConnect(){
