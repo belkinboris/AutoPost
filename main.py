@@ -28,6 +28,7 @@ from database import (
     init_db, session,
     User, Channel, Source, Post, Payment, Referral, LandingEvent, IdempotencyKey, ProductEvent,
     TrafficAttribution, PostApproval, TelegramIdentity, PostFeedback,
+    claim_payment_for_credit,
 )
 from attribution import classify_utm
 from pydantic import BaseModel as _BaseModel
@@ -77,6 +78,15 @@ except ImportError:
 async def lifespan(app: FastAPI):
     init_db()
     logger.info("БД готова")
+    # Разовая идемпотентная починка данных, накопленных прошлыми версиями
+    # (аудит 02.08): незакрытые подтверждения на автопилот-каналах, посты,
+    # застрявшие в "pending" ещё до C14, зависшие захваты публикации.
+    # Если чинить нечего -- не делает ни одной записи. Ошибка здесь не должна
+    # мешать приложению подняться.
+    try:
+        await tasks.backfill_orphaned_posts()
+    except Exception:
+        logger.exception("backfill_orphaned_posts на старте не отработал")
     if _HAS_SCHEDULER and _scheduler:
         _scheduler.add_job(
             tasks.tick, "interval", seconds=config.TICK_SECONDS,
@@ -1371,25 +1381,50 @@ async def schedule_post(post_id: int, data: ScheduleIn, user: User = Depends(cur
 
 
 @app.post("/api/posts/{post_id}/reject")
-async def reject_post(post_id: int, user: User = Depends(current_user)):
+async def reject_post(post_id: int, background_tasks: BackgroundTasks, user: User = Depends(current_user)):
     with session() as s:
         p = _own_post(s, post_id, user)
         channel_id = p.channel_id
+        if p.status in ("published", "rejected"):
+            # Повторное нажатие (кнопка не блокировалась, ответ шёл долго) не
+            # должно ни менять решение, ни запускать ещё одну догенерацию.
+            return {"ok": True, "already_done": True}
         p.status = "rejected"
         s.add(p); s.commit()
     tasks.cancel_pending_approval(post_id)
-    await tasks._refill_queue(channel_id)
+    # КРИТИЧНО (аудит 02.08): раньше здесь стоял `await tasks._refill_queue(...)`
+    # -- ручка держала HTTP-ответ всю генерацию замены (десятки секунд), и на
+    # экране «ничего не происходило», пока человек не обновит страницу. Ровно
+    # эту ошибку уже чинили в publish_post; здесь она осталась.
+    background_tasks.add_task(tasks._refill_queue, channel_id)
     return {"ok": True}
 
 
 @app.delete("/api/posts/{post_id}")
-async def delete_post(post_id: int, user: User = Depends(current_user)):
+async def delete_post(post_id: int, background_tasks: BackgroundTasks, user: User = Depends(current_user)):
     with session() as s:
         p = _own_post(s, post_id, user)
         channel_id = p.channel_id
+        # КРИТИЧНО (правило 3, найдено аудитом 02.08): PostApproval держит FK на
+        # post.id, а cancel_pending_approval только меняет статус, строку не
+        # удаляет -- поэтому DELETE падал с нарушением внешнего ключа (500) на
+        # любом посте, у которого КОГДА-ЛИБО было подтверждение, включая уже
+        # закрытые. Тот же класс бага, что трижды ловили в delete_account и
+        # один раз в delete_channel. flush() до удаления самого поста
+        # обязателен: без explicit relationship() SQLAlchemy не гарантирует
+        # порядок DELETE внутри одной транзакции, а SQLite проверяет FK на
+        # каждый оператор.
+        for appr in s.exec(select(PostApproval).where(PostApproval.post_id == post_id)).all():
+            s.delete(appr)
+        s.flush()
+        for fb in s.exec(select(PostFeedback).where(PostFeedback.post_id == post_id)).all():
+            s.delete(fb)
+        s.flush()
         s.delete(p); s.commit()
-    tasks.cancel_pending_approval(post_id)
-    await tasks._refill_queue(channel_id)
+    # Догенерация -- в фоне, не держим HTTP-ответ на время работы модели
+    # (та же причина, что и в publish_post: раньше ответ ждал десятки секунд,
+    # и на экране «ничего не происходило»).
+    background_tasks.add_task(tasks._refill_queue, channel_id)
     return {"ok": True}
 
 
@@ -1466,15 +1501,16 @@ async def _sync_yookassa_pending_payments(user_id: int) -> None:
                 )
                 continue
 
-            if pay.status != "paid":
-                pay.status = "paid"
-                pay.paid_at = datetime.utcnow()
+            # Правило 7 (деньги): захват атомарный. Раньше здесь стояло
+            # `if pay.status != "paid"`, и тот же платёж мог быть зачтён
+            # параллельно вебхуком (он ретраится) -- оба пути проходили
+            # проверку и начисляли токены дважды.
+            if claim_payment_for_credit(s, pay.id):
                 u = s.get(User, pay.user_id)
                 if u:
                     u.token_balance += pay.tokens
                     s.add(u)
-                s.add(pay)
-                s.commit()
+                    s.commit()
                 logger.info(
                     "Платёж YooKassa зачтён через sync: пользователь %s +%s токенов",
                     pay.user_id, pay.tokens,
@@ -2036,15 +2072,15 @@ async def yookassa_notify(request: Request):
             )
             return PlainTextResponse("OK", status_code=200)
 
-        if pay.status != "paid":
-            pay.status = "paid"
-            pay.paid_at = datetime.utcnow()
+        # Правило 7 (деньги): захват атомарный, см. claim_payment_for_credit.
+        # ЮKassa ретраит вебхук, а /api/payments параллельно дёргает
+        # _sync_yookassa_pending_payments -- раньше оба начисляли токены.
+        if claim_payment_for_credit(s, pay.id):
             u = s.get(User, pay.user_id)
             if u:
                 u.token_balance += pay.tokens
                 s.add(u)
-            s.add(pay)
-            s.commit()
+                s.commit()
             logger.info("Платёж YooKassa зачтён: пользователь %s +%s токенов", pay.user_id, pay.tokens)
             _activate_subscription(s, pay, yk_payment)
             credited_user_id = pay.user_id

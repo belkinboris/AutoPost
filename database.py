@@ -133,6 +133,15 @@ class Post(SQLModel, table=True):
     # фронт должен показать красную плашку "не подтвердили вовремя", а не
     # молча выдать пост за обычный новый в очереди.
     requeued_at: Optional[datetime] = None
+    # Атомарный захват поста на публикацию (аудит 02.08). Раньше publish_post
+    # читал status, потом уходил в await telegram_api.send_message, и только
+    # потом писал "published" -- два одновременных нажатия («Опубликовать» на
+    # сайте и та же кнопка в карточке Telegram) оба проходили проверку и
+    # отправляли пост подписчикам ДВАЖДЫ. Отдельная колонка, а не статус:
+    # промежуточный статус сломал бы отрисовку очереди и все выборки по
+    # "scheduled". Протухает через PUBLISH_CLAIM_STALE_MINUTES -- если процесс
+    # умер между захватом и отправкой, пост не должен зависнуть навсегда.
+    publishing_since: Optional[datetime] = None
 
 
 class PostApproval(SQLModel, table=True):
@@ -508,6 +517,114 @@ def _add_missing_columns():
     except Exception:
         logger.exception("Миграция channel.generating_since не удалась")
 
+    # Post.publishing_since -- атомарный захват на публикацию (аудит 02.08),
+    # см. класс Post и claim_post_for_publish.
+    try:
+        inspector = inspect(engine)
+        if "post" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("post")}
+            if "publishing_since" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE post ADD COLUMN publishing_since TIMESTAMP"
+                    ))
+                logger.info("Миграция: добавлена колонка post.publishing_since")
+    except Exception:
+        logger.exception("Миграция post.publishing_since не удалась")
+
+
+# ── Атомарные захваты (защита от гонок) ───────────────────────────────────
+#
+# Общая беда, найденная аудитом 02.08 в трёх местах сразу: код читал состояние
+# ("пост ещё не опубликован", "платёж ещё не зачтён", "канал ещё не генерирует"),
+# потом уходил в await на десятки секунд (Telegram, ЮKassa, LLM), и только
+# потом писал результат. Два одновременных исполнителя проходили проверку оба.
+# Симптомы в проде: пост уходил подписчикам дважды, токены начислялись дважды
+# при ретрае вебхука, очередь росла выше заданной глубины.
+#
+# Лечится единообразно: состояние меняется ОДНИМ условным UPDATE, и право
+# продолжать получает только тот, чей UPDATE реально изменил строку
+# (rowcount == 1). Работает одинаково в SQLite и Postgres, без блокировок
+# уровня приложения (их нельзя было бы разделить между процессами).
+
+def claim_payment_for_credit(s: Session, payment_id: int) -> bool:
+    """
+    Помечает платёж оплаченным. True -- захватили мы, значит нам и начислять
+    токены. False -- кто-то успел первым, начислять НЕЛЬЗЯ.
+
+    Правило 7 в CLAUDE.md (деньги -- с максимальной осторожностью): вебхук
+    ЮKassa ретраится, а /api/payments дёргает синхронизацию на каждый заход в
+    историю платежей -- оба пути начисляли токены независимо.
+    """
+    res = s.execute(
+        text("UPDATE payment SET status = 'paid', paid_at = :now "
+             "WHERE id = :pid AND status != 'paid'"),
+        {"now": datetime.utcnow(), "pid": payment_id},
+    )
+    s.commit()
+    return res.rowcount == 1
+
+
+def claim_post_for_publish(s: Session, post_id: int, stale_after_minutes: int = 5) -> bool:
+    """
+    Захватывает пост на публикацию. True -- публикуем мы. False -- пост уже
+    опубликован или его прямо сейчас публикует кто-то другой.
+
+    Захват протухает через stale_after_minutes: если процесс умер между
+    захватом и ответом Telegram, пост должен вернуться в оборот, а не
+    зависнуть навсегда неопубликованным.
+    """
+    now = datetime.utcnow()
+    stale_before = now - timedelta(minutes=stale_after_minutes)
+    res = s.execute(
+        text("UPDATE post SET publishing_since = :now "
+             "WHERE id = :pid AND status != 'published' "
+             "AND (publishing_since IS NULL OR publishing_since < :stale)"),
+        {"now": now, "pid": post_id, "stale": stale_before},
+    )
+    s.commit()
+    return res.rowcount == 1
+
+
+def release_post_publish_claim(s: Session, post_id: int):
+    """Снимает захват (публикация не удалась) -- пост снова можно попробовать."""
+    s.execute(
+        text("UPDATE post SET publishing_since = NULL WHERE id = :pid"),
+        {"pid": post_id},
+    )
+    s.commit()
+
+
+def claim_channel_for_generation(s: Session, channel_id: int, stale_after_minutes: int = 3) -> bool:
+    """
+    Захватывает канал на генерацию поста. True -- генерируем мы. False -- по
+    этому каналу уже идёт генерация.
+
+    Это и есть недостающая сериализация, из-за которой очередь росла выше
+    заданной глубины, а дедупликация не видела пост-близнец: параллельные
+    вызовы читали одинаковое "в очереди N" и одинаковый снимок недавних
+    текстов. Channel.generating_since уже существовал как индикатор для
+    интерфейса -- теперь он же работает замком, отдельной колонки не нужно.
+    """
+    now = datetime.utcnow()
+    stale_before = now - timedelta(minutes=stale_after_minutes)
+    res = s.execute(
+        text("UPDATE channel SET generating_since = :now "
+             "WHERE id = :cid AND (generating_since IS NULL OR generating_since < :stale)"),
+        {"now": now, "cid": channel_id, "stale": stale_before},
+    )
+    s.commit()
+    return res.rowcount == 1
+
+
+def release_channel_generation_claim(s: Session, channel_id: int):
+    """Снимает захват генерации."""
+    s.execute(
+        text("UPDATE channel SET generating_since = NULL WHERE id = :cid"),
+        {"cid": channel_id},
+    )
+    s.commit()
+
 
 def init_db():
     SQLModel.metadata.create_all(engine)
@@ -541,10 +658,6 @@ def due_scheduled_posts(s: Session, now: datetime) -> list[Post]:
     публикуется никогда, только переносится в конец очереди
     (tasks._requeue_unconfirmed_post) или ждёт решения сколько угодно.
 
-    Проверка по PostApproval.status=="waiting" оставлена ДОПОЛНИТЕЛЬНО --
-    защищает от узкого случая переключения канала на автопилот, пока у уже
-    стоящего в очереди поста ещё висит неразрешённое подтверждение.
-
     КРИТИЧНО (найдено 02.08 при разборе прод-инцидента с интервалом): без
     фильтра по Channel.enabled пауза канала не останавливала уже
     запланированные посты -- она лишь останавливает _refill_queue (новую
@@ -552,40 +665,69 @@ def due_scheduled_posts(s: Session, now: datetime) -> list[Post]:
     стоит в очереди. Интерфейс при этом прямо обещает "Новые посты не
     создаются и не публикуются, пока канал на паузе" (app.part11.js) --
     без этого фильтра обещание было бы неправдой (правило 5 в CLAUDE.md).
+
+    Про подтверждения здесь СОЗНАТЕЛЬНО нет ни слова. Раньше стояла
+    «дополнительная» проверка «пропустить пост, если у него висит
+    PostApproval.status=='waiting'» -- задумывалась как защита на случай
+    переключения канала на автопилот с неразрешёнными подтверждениями, а на
+    деле создала худшую беду (аудит 02.08): такой пост не публиковался
+    здесь и одновременно переносился в конец очереди по дедлайну, то есть не
+    выходил в канал НИКОГДА и вечно занимал слот очереди. На автопилоте
+    висящее подтверждение -- это мусор от прошлого режима, а не причина не
+    публиковать; закрывают его tasks.sync_posts_to_channel_mode (при смене
+    режима) и tasks.backfill_orphaned_posts (для уже накопленных).
     """
-    awaiting_ids = {
-        pid for pid in s.exec(
-            select(PostApproval.post_id).where(PostApproval.status == "waiting")
-        ).all()
-    }
-    posts = s.exec(
+    return list(s.exec(
         select(Post).join(Channel, Channel.id == Post.channel_id)
         .where(
             Post.status == "scheduled", Post.scheduled_at <= now,
             Channel.auto_publish == True, Channel.enabled == True,  # noqa: E712
         )
-    ).all()
-    return [p for p in posts if p.id not in awaiting_ids]
+    ).all())
 
 
 def due_post_approvals(s: Session, now: datetime) -> list[PostApproval]:
-    """Дедлайн подтверждения истёк без реакции -- пост переносится в конец
-    очереди (tasks._requeue_unconfirmed_post), а не публикуется."""
+    """
+    Дедлайн подтверждения истёк без реакции -- пост переносится в конец
+    очереди (tasks._requeue_unconfirmed_post), а не публикуется.
+
+    КРИТИЧНО (аудит 02.08): фильтр по Channel.auto_publish обязателен. Если
+    канал переключили на автопилот, пока подтверждения ещё висели, эта
+    выборка продолжала их забирать -- пост бесконечно переносился в конец
+    очереди, НИКОГДА не публиковался и занимал слот, а владельцу шли карточки
+    «подтвердите» на канале, где интерфейс обещает «подтверждать ничего не
+    нужно». Подтверждения существуют только для режима подтверждения.
+    """
     return list(
-        s.exec(select(PostApproval).where(PostApproval.status == "waiting", PostApproval.deadline <= now)).all()
+        s.exec(
+            select(PostApproval).join(Channel, Channel.id == PostApproval.channel_id)
+            .where(
+                PostApproval.status == "waiting", PostApproval.deadline <= now,
+                Channel.auto_publish == False,  # noqa: E712
+            )
+        ).all()
     )
 
 
 def approvals_needing_warning(s: Session, now: datetime, lead_minutes: int) -> list[PostApproval]:
-    """Подтверждения, чей дедлайн наступит в ближайшие lead_minutes и о
+    """
+    Подтверждения, чей дедлайн наступит в ближайшие lead_minutes и о
     которых ещё не предупреждали (final_warning_sent=False) -- жёлтая
-    плашка "не подтвердите за N мин -- уйдёт в конец очереди"."""
+    плашка "не подтвердите за N мин -- уйдёт в конец очереди".
+
+    Фильтр по Channel.auto_publish -- по той же причине, что и в
+    due_post_approvals: на автопилоте предупреждать не о чем.
+    """
     lead = timedelta(minutes=lead_minutes)
     return list(
-        s.exec(select(PostApproval).where(
-            PostApproval.status == "waiting",
-            PostApproval.final_warning_sent == False,  # noqa: E712
-            PostApproval.deadline > now,
-            PostApproval.deadline <= now + lead,
-        )).all()
+        s.exec(
+            select(PostApproval).join(Channel, Channel.id == PostApproval.channel_id)
+            .where(
+                PostApproval.status == "waiting",
+                PostApproval.final_warning_sent == False,  # noqa: E712
+                PostApproval.deadline > now,
+                PostApproval.deadline <= now + lead,
+                Channel.auto_publish == False,  # noqa: E712
+            )
+        ).all()
     )

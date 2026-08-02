@@ -14,8 +14,13 @@ import config
 import generator
 import research
 import telegram_api
-from database import session, Channel, ChannelRule, Source, Post, User, TrafficAttribution, PostApproval, Payment
+from database import (
+    session, Channel, ChannelRule, Source, Post, User, TrafficAttribution, PostApproval, Payment,
+    claim_post_for_publish, release_post_publish_claim,
+    claim_channel_for_generation, release_channel_generation_claim,
+)
 from sqlmodel import select
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -133,19 +138,51 @@ async def _set_generating(channel_id: int, on: bool):
 
 
 async def generate_for_channel(channel_id: int, topic: str = "", force_pending: bool = False,
-                                target_scheduled_at: Optional[datetime] = None) -> dict:
+                                target_scheduled_at: Optional[datetime] = None,
+                                respect_queue_depth: bool = True) -> dict:
     """
-    Тонкая обёртка вокруг _generate_for_channel_impl -- выставляет
-    Channel.generating_since ДО тяжёлой работы (классификация темы, поиск,
-    сам запрос к модели) и снимает его ПОСЛЕ, независимо от результата
-    (try/finally: исключение внутри генерации не должно оставить канал
-    навсегда "генерирующим" на экране).
+    Единственная точка входа в генерацию. Делает три вещи, которых раньше не
+    делал никто, из-за чего очередь росла выше заданной глубины и появлялись
+    посты-близнецы (аудит 02.08):
+
+    1. АТОМАРНО захватывает канал (claim_channel_for_generation). Пока по
+       каналу идёт генерация, второй вызов не начнёт свою, а вернётся с
+       already_generating. Раньше замка не было вовсе: между «прочитали, что
+       в очереди 3 из 4» и «записали пост» проходили десятки секунд запроса к
+       модели, и в это окно успевали тик, клик пользователя, догенерация после
+       публикации, кнопка в Telegram и вебхук ЮKassa -- каждый со своей
+       генерацией. Channel.generating_since раньше был только индикатором для
+       интерфейса; теперь он же и замок.
+    2. Перепроверяет глубину очереди уже ПОД захватом -- то есть после того,
+       как все параллельные вызовы отсеялись. Это ловит и случай, когда
+       ограничения не было вовсе: у ручки "Написать пост сейчас"
+       (POST /api/channels/{id}/generate) проверки глубины не было ни одной,
+       и кнопка в настройках канала спокойно перебивала лимит.
+    3. Снимает захват в finally -- падение генерации не должно оставить канал
+       заблокированным (плюс сам захват протухает, см. claim_channel_for_generation).
+
+    respect_queue_depth=False -- только для онбординга (первый черновик
+    показывается до того, как у канала вообще есть очередь).
     """
-    await _set_generating(channel_id, True)
+    with session() as s:
+        if not claim_channel_for_generation(s, channel_id):
+            logger.info(f"канал {channel_id}: генерация уже идёт, второй раз не запускаем")
+            return {"ok": False, "message": "Пост для этого канала уже готовится",
+                    "already_generating": True}
     try:
+        if respect_queue_depth:
+            with session() as s:
+                channel = s.get(Channel, channel_id)
+                if not channel:
+                    return {"ok": False, "message": "Канал не найден"}
+                if _queue_len(s, channel_id) >= queue_target_for_user(s, channel.user_id, channel):
+                    logger.info(f"канал {channel_id}: очередь уже полна, генерацию пропускаем")
+                    return {"ok": False, "message": "Очередь уже заполнена",
+                            "queue_full": True}
         return await _generate_for_channel_impl(channel_id, topic, force_pending, target_scheduled_at)
     finally:
-        await _set_generating(channel_id, False)
+        with session() as s:
+            release_channel_generation_claim(s, channel_id)
 
 
 async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pending: bool = False,
@@ -487,12 +524,32 @@ async def publish_post(post_id: int) -> dict:
         text = generator._clean_post(post.text)  # дочищаем перед публикацией
         chat = channel.tg_chat
 
+    # КРИТИЧНО (аудит 02.08): проверка status=="published" выше сама по себе от
+    # двойной публикации НЕ защищает -- между ней и записью результата стоит
+    # await на Telegram, и два одновременных исполнителя (кнопка на сайте и
+    # кнопка в карточке Telegram, либо тик и ручка) проходили её оба, после
+    # чего пост уходил подписчикам ДВАЖДЫ. Захват атомарный: право отправлять
+    # получает только тот, чей UPDATE реально изменил строку.
+    with session() as s:
+        if not claim_post_for_publish(s, post_id):
+            post = s.get(Post, post_id)
+            if post and post.status == "published":
+                return {
+                    "ok": True, "message": "Пост уже опубликован", "already_published": True,
+                    "telegram_message_id": post.tg_message_id,
+                    "published_at": post.published_at.isoformat() if post.published_at else None,
+                }
+            logger.info(f"Пост {post_id}: публикация уже идёт в другом месте, второй раз не отправляем")
+            return {"ok": True, "message": "Пост уже публикуется", "already_published": True}
+
     result = await telegram_api.send_message(chat, text)
     if not result.get("ok"):
         # Сырой Telegram description никогда не попадает в message напрямую —
         # логируем отдельно, пользователю отдаём только нормализованный текст.
         raw_desc = result.get("description", "")
         logger.warning(f"Пост {post_id}: ошибка публикации в Telegram, raw_telegram_error=«{raw_desc}»")
+        with session() as s:
+            release_post_publish_claim(s, post_id)
         return {"ok": False, "message": telegram_api.normalize_publish_error(raw_desc)}
 
     # КРИТИЧНО (P0 fix): сохраняем published-статус в БД СРАЗУ после успеха
@@ -508,6 +565,7 @@ async def publish_post(post_id: int) -> dict:
         post.status = "published"
         post.published_at = published_at
         post.tg_message_id = message_id
+        post.publishing_since = None   # захват отработал, снимаем
         s.add(post); s.commit()
 
     return {
@@ -717,6 +775,15 @@ async def _requeue_unconfirmed_post(approval_id: int, post_id: int, review_chat_
             return  # решено другим путём (например отклонено в приложении)
 
         channel = s.get(Channel, post.channel_id)
+        if not channel or channel.auto_publish:
+            # Канал переключили на автопилот, пока подтверждение висело.
+            # Переносить нечего: на автопилоте пост публикуется сам по своему
+            # времени, а бесконечный перенос как раз и делал его вечным
+            # (аудит 02.08). Просто закрываем подтверждение.
+            approval.status = "done"
+            s.add(approval); s.commit()
+            return
+
         new_slot = _next_queue_slot(s, channel)
         post.scheduled_at = new_slot
         post.requeued_at = datetime.utcnow()
@@ -833,6 +900,79 @@ async def _sync_approval_to_reschedule(post_id: int, new_deadline: datetime):
         s.commit()
 
 
+async def backfill_orphaned_posts() -> dict:
+    """
+    Разовая (идемпотентная) починка данных, накопленных прошлыми версиями.
+    Вызывается на старте приложения; повторные запуски безвредны -- если
+    чинить нечего, не делает ни одной записи.
+
+    Три вида мусора, найденные аудитом 02.08 на живом проде:
+
+    1. Незакрытые подтверждения на автопилот-каналах. Пост не публиковался
+       никогда: due_scheduled_posts его пропускал, а дедлайн бесконечно
+       переносил в конец очереди. Закрываем -- дальше он публикуется сам.
+    2. Посты в status="pending" без scheduled_at на автопилот-каналах.
+       Наследие доC14, когда автопилот публиковал пост прямо в момент
+       генерации: если отправка в Telegram не удалась, пост навсегда
+       оставался в этом статусе. Ставим их в очередь.
+    3. Зависшие захваты публикации (publishing_since от упавшего процесса) --
+       снимаем, иначе пост не опубликуется до истечения таймаута.
+
+    Онбординг-черновики (pending без scheduled_at) на каналах В РЕЖИМЕ
+    ПОДТВЕРЖДЕНИЯ намеренно не трогаем: там «ждёт вашего решения» -- правда.
+    """
+    fixed = {"approvals_closed": 0, "posts_scheduled": 0, "claims_released": 0}
+    with session() as s:
+        auto_channel_ids = [
+            c.id for c in s.exec(select(Channel).where(Channel.auto_publish == True)).all()  # noqa: E712
+        ]
+
+        if auto_channel_ids:
+            stale_approvals = s.exec(
+                select(PostApproval).where(
+                    PostApproval.channel_id.in_(auto_channel_ids),
+                    PostApproval.status.in_(["waiting", "awaiting_edit"]),
+                )
+            ).all()
+            for appr in stale_approvals:
+                appr.status = "done"
+                s.add(appr)
+            fixed["approvals_closed"] = len(stale_approvals)
+            if stale_approvals:
+                s.commit()
+
+        released = s.execute(
+            text("UPDATE post SET publishing_since = NULL "
+                 "WHERE publishing_since IS NOT NULL AND status != 'published'")
+        )
+        fixed["claims_released"] = released.rowcount or 0
+        s.commit()
+
+    # Постановка в очередь -- отдельно и по одному каналу: _next_queue_slot
+    # должен видеть уже поставленные посты, иначе все получат одно время.
+    for cid in auto_channel_ids:
+        with session() as s:
+            channel = s.get(Channel, cid)
+            if not channel:
+                continue
+            orphans = s.exec(
+                select(Post).where(
+                    Post.channel_id == cid, Post.status == "pending",
+                    Post.scheduled_at.is_(None),
+                ).order_by(Post.created_at)
+            ).all()
+            for p in orphans:
+                p.status = "scheduled"
+                p.scheduled_at = _next_queue_slot(s, channel)
+                s.add(p)
+                s.commit()
+                fixed["posts_scheduled"] += 1
+
+    if any(fixed.values()):
+        logger.info(f"backfill_orphaned_posts: починено {fixed}")
+    return fixed
+
+
 async def sync_posts_to_channel_mode(channel_id: int):
     """
     Вызывается из main.py patch_channel при сохранении настроек канала.
@@ -860,6 +1000,29 @@ async def sync_posts_to_channel_mode(channel_id: int):
             return
 
         if channel.auto_publish:
+            # КРИТИЧНО (аудит 02.08): гасим ВСЕ незакрытые подтверждения канала.
+            # Без этого посты, стоявшие в очереди на момент включения
+            # автопилота, не публиковались никогда: due_scheduled_posts их
+            # пропускал (висит подтверждение), а дедлайн бесконечно переносил
+            # их в конец очереди, занимая слот и рассылая карточки на канал,
+            # где интерфейс обещает «подтверждать ничего не нужно».
+            # awaiting_edit гасим тоже -- иначе присланный позже текст
+            # воскресит подтверждение уже на автопилот-канале.
+            stale = s.exec(
+                select(PostApproval).where(
+                    PostApproval.channel_id == channel_id,
+                    PostApproval.status.in_(["waiting", "awaiting_edit"]),
+                )
+            ).all()
+            for appr in stale:
+                appr.status = "done"
+                s.add(appr)
+            if stale:
+                s.commit()
+                logger.info(
+                    f"канал {channel_id}: включён автопилот, закрыто подтверждений: {len(stale)}"
+                )
+
             orphans = s.exec(
                 select(Post).where(
                     Post.channel_id == channel_id, Post.status == "pending",
@@ -873,15 +1036,25 @@ async def sync_posts_to_channel_mode(channel_id: int):
                 s.commit()
             return
 
+        # Режим подтверждения. Посты в status="pending" без scheduled_at
+        # (онбординг-черновики и наследие доC14) здесь не трогаем: у них нет
+        # времени в очереди, они честно показываются как «ждёт вашего решения
+        # · сам не опубликуется» -- это правда для обоих режимов.
         scheduled_posts = s.exec(
             select(Post).where(Post.channel_id == channel_id, Post.status == "scheduled")
         ).all()
-        waiting_post_ids = {
+        # awaiting_edit тоже считаем «занятым»: человек прямо сейчас правит
+        # текст в Telegram, повторная карточка сбила бы диалог и потеряла
+        # присланный следом текст (аудит 02.08).
+        busy_post_ids = {
             a.post_id for a in s.exec(
-                select(PostApproval).where(PostApproval.channel_id == channel_id, PostApproval.status == "waiting")
+                select(PostApproval).where(
+                    PostApproval.channel_id == channel_id,
+                    PostApproval.status.in_(["waiting", "awaiting_edit"]),
+                )
             ).all()
         }
-        need_approval = [(p.id, p.scheduled_at) for p in scheduled_posts if p.id not in waiting_post_ids]
+        need_approval = [(p.id, p.scheduled_at) for p in scheduled_posts if p.id not in busy_post_ids]
 
     for post_id, deadline in need_approval:
         try:
@@ -1483,10 +1656,19 @@ async def _refill_queue(channel_id: int):
         try:
             result = await generate_for_channel(channel_id)
             if not result.get("ok"):
-                break  # баланс кончился или другая ошибка -- не долбим тик впустую
+                break  # баланс кончился, генерация уже идёт, или другая ошибка
         except Exception as e:
             logger.warning(f"пополнение очереди канала {channel_id}: {e}")
             break
+
+
+def _queue_len(s, channel_id: int) -> int:
+    return len(s.exec(
+        select(Post).where(
+            Post.channel_id == channel_id,
+            Post.status.in_(["pending", "scheduled"]),
+        )
+    ).all())
 
 
 async def resume_starved_channels(user_id: int):
