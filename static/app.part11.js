@@ -57,6 +57,22 @@ function renderQueueBody(){
   const history=posts.filter(p=>p.status==="published"||p.status==="rejected");
   const c=App._chan;
 
+  // Единая модель очереди (C14): очередь -- это порядок публикации, то есть
+  // порядок по scheduled_at, а не по дате создания (в которой API отдаёт
+  // список). Без этой сортировки свежесозданный автопилот-пост с временем
+  // через 2 часа показывался ВЫШЕ поста с дедлайном подтверждения через 5
+  // минут -- просто потому что создан позже. Одновременно это и есть
+  // "пересортировка при переносе даты" из задачи владельца: позиция в
+  // очереди -- это и есть scheduled_at, отдельного поля "место в очереди"
+  // нет, поэтому смена времени (showPicker/doSchedule) меняет порядок сама,
+  // без какой-либо отдельной логики. Посты без scheduled_at (онбординг-
+  // черновики) -- в конец, тем же порядком, что и _channel_dict на бэкенде.
+  pending.sort((a,b)=>{
+    const at=a.scheduled_at?new Date(a.scheduled_at+"Z").getTime():Infinity;
+    const bt=b.scheduled_at?new Date(b.scheduled_at+"Z").getTime():Infinity;
+    return at-bt;
+  });
+
   // ── Статус очереди ────────────────────────────────────────────────────
   // Заменяет прежний абстрактный баннер «Публикация после подтверждения».
   // Тот баннер (а) был написан канцеляритом без подлежащих («Подтвердить или
@@ -458,6 +474,31 @@ function renderQueueCalendar(posts, forecastSlots){
 }
 
 
+// Настраиваемая глубина очереди (C14, владелец 01.08): базово 3 поста,
+// можно увеличить до потолка тарифа (queue_ceiling из _channel_dict, 7 у
+// оплатившего). Значения выше потолка показаны, но заблокированы -- честнее,
+// чем прятать их совсем: видно, куда расти, а не только что доступно сейчас.
+function _renderQueueDepthRow(c){
+  const ceiling = c.queue_ceiling || 3;
+  const current = c.queue_depth || c.queue_target || 3;
+  const options = [3,4,5,6,7];
+  const hint = ceiling < 7
+    ? `Сколько готовых постов держим наготове одновременно. На вашем тарифе — до ${ceiling}; больше открывается на «Про» и выше.`
+    : `Сколько готовых постов держим наготове одновременно.`;
+  return `<div class="toggle-row" style="align-items:flex-start">
+    <div class="toggle-info" style="flex:1">
+      <b>Глубина очереди</b><small>${hint}</small>
+      <div class="seg" id="seg_queue_depth" style="max-width:320px;margin-top:8px">
+        ${options.map(n=>{
+          const disabled = n > ceiling;
+          const on = n === current && !disabled;
+          return `<button class="${on?"on":""}" ${disabled?`disabled title="Доступно с тарифа, открывающего очередь на ${n}" style="opacity:.4;cursor:not-allowed"`:""} onclick="pickOpt('queue_depth',${n},'seg_queue_depth')">${n}</button>`;
+        }).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
 // SETTINGS
 function renderSettings(){
   const c=App._chan;
@@ -527,6 +568,7 @@ function renderSettings(){
         <div class="toggle-info"><b>Искать новости в интернете</b></div>
         <label class="switch"><input type="checkbox" id="sw_web" ${c.use_web_search?"checked":""}><span class="slider"></span></label>
       </div>
+      ${_renderQueueDepthRow(c)}
     </div>
     <div class="card">
       <div class="card-title">Уведомления в Телеграм</div>

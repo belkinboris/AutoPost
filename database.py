@@ -82,6 +82,12 @@ class Channel(SQLModel, table=True):
     onboarded: bool = False
     last_generated_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Настраиваемая глубина очереди (C14, решение владельца 01.08): базово
+    # держим MIN_QUEUE постов, пользователь может увеличить до потолка своего
+    # тарифа (PAID_QUEUE=7 оплатившим, tasks.queue_target_for_user). None --
+    # старое поведение без явного выбора: используется весь потолок тарифа
+    # целиком, как до появления этой настройки.
+    queue_depth: Optional[int] = None
 
 
 class ChannelRule(SQLModel, table=True):
@@ -462,6 +468,21 @@ def _add_missing_columns():
                 logger.info("Миграция: добавлена колонка post.requeued_at")
     except Exception:
         logger.exception("Миграция post.requeued_at не удалась")
+
+    # Channel.queue_depth -- настраиваемая глубина очереди (C14, решение
+    # владельца 01.08), см. класс Channel.
+    try:
+        inspector = inspect(engine)
+        if "channel" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("channel")}
+            if "queue_depth" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE channel ADD COLUMN queue_depth INTEGER"
+                    ))
+                logger.info("Миграция: добавлена колонка channel.queue_depth")
+    except Exception:
+        logger.exception("Миграция channel.queue_depth не удалась")
 
 
 def init_db():

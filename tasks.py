@@ -1161,20 +1161,29 @@ PAID_QUEUE = 7       # "очередь на неделю" -- ровно то, ч
 MAX_GEN_PER_TICK = 1
 
 
-def queue_target_for_user(s, user_id: int) -> int:
+def queue_target_for_user(s, user_id: int, channel: Optional[Channel] = None) -> int:
     """
     Сколько готовых постов держим наготове. Платящему -- неделя вперёд, всем
-    остальным -- стартовые 3.
+    остальным -- стартовые 3. Это потолок тарифа.
 
     Признак оплаты -- любой платёж со статусом "paid" (User.plan в схеме есть,
     но не используется нигде в коде, полагаться на него нельзя). Отдельная
     система тарифов для этого не нужна и намеренно не заводится.
+
+    Владелец 01.08 (C14): в пределах потолка тарифа пользователь может
+    настроить глубину очереди канала (`Channel.queue_depth`, от MIN_QUEUE до
+    потолка) -- поэтому передаём channel, когда он под рукой. Без channel
+    (или если queue_depth не задан) -- поведение как раньше: весь потолок
+    тарифа целиком.
     """
     from sqlmodel import select as sel
     paid = s.exec(
         sel(Payment).where(Payment.user_id == user_id, Payment.status == "paid")
     ).first()
-    return PAID_QUEUE if paid else MIN_QUEUE
+    ceiling = PAID_QUEUE if paid else MIN_QUEUE
+    if channel and channel.queue_depth:
+        return max(MIN_QUEUE, min(channel.queue_depth, ceiling))
+    return ceiling
 
 
 def _next_slot_after(channel: Channel, anchor: datetime) -> datetime:
@@ -1280,7 +1289,7 @@ async def _refill_queue(channel_id: int):
                 Post.status.in_(["pending", "scheduled"]),
             )
         ).all())
-        target = queue_target_for_user(s, channel.user_id)
+        target = queue_target_for_user(s, channel.user_id, channel)
 
     if pending_count >= target:
         return

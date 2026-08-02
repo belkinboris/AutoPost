@@ -68,6 +68,7 @@ class ChannelPatch(BaseModel):
     channel_type: Optional[str] = None
     enabled: Optional[bool] = None
     onboarded: Optional[bool] = None
+    queue_depth: Optional[int] = None
 
 
 class SourceIn(BaseModel):

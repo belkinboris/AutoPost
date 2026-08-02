@@ -679,9 +679,16 @@ def _channel_dict(s, ch: Channel) -> dict:
     # Целевая глубина очереди зависит от того, оплачивал ли владелец (см.
     # tasks.queue_target_for_user), поэтому приходит здесь, а не в /api/config:
     # тот отдаётся без авторизации и одинаков для всех.
+    #
+    # queue_target -- фактическая цель пополнения (с учётом Channel.queue_depth,
+    # если задан). queue_ceiling -- потолок тарифа БЕЗ учёта queue_depth: нужен
+    # фронту отдельно, чтобы нарисовать степпер "от MIN_QUEUE до потолка" и
+    # честно показать, докуда вообще можно увеличивать (C14, владелец 01.08).
     d["queue_target"] = tasks.MIN_QUEUE
+    d["queue_ceiling"] = tasks.MIN_QUEUE
     try:
-        d["queue_target"] = tasks.queue_target_for_user(s, ch.user_id)
+        d["queue_target"] = tasks.queue_target_for_user(s, ch.user_id, ch)
+        d["queue_ceiling"] = tasks.queue_target_for_user(s, ch.user_id)
     except Exception:
         logger.exception(f"_channel_dict: не удалось определить queue_target для канала {ch.id}")
         s.rollback()
@@ -898,6 +905,15 @@ def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depends(curr
             # Сбрасываем verified только если реально поменялся username
             if new_chat != (ch.tg_chat or ""):
                 ch.verified = False
+        if "queue_depth" in payload:
+            # Настраиваемая глубина очереди (C14, владелец 01.08): зажимаем
+            # в [MIN_QUEUE, потолок тарифа] здесь же, при записи -- иначе
+            # бесплатный пользователь мог бы сохранить queue_depth=7, который
+            # молча ничего не делает (queue_target_for_user всё равно обрежет
+            # его до потолка при чтении), и не понимать, почему очередь не
+            # растёт (правило 5: интерфейс не обещает того, чего нет).
+            ceiling = tasks.queue_target_for_user(s, user.id)
+            payload["queue_depth"] = max(tasks.MIN_QUEUE, min(payload["queue_depth"], ceiling))
         # При возобновлении ставим last_generated_at = now
         # чтобы следующая авто-генерация была через полный интервал, а не немедленно
         if payload.get("enabled") is True and not ch.enabled:
