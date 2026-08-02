@@ -833,6 +833,63 @@ async def _sync_approval_to_reschedule(post_id: int, new_deadline: datetime):
         s.commit()
 
 
+async def sync_posts_to_channel_mode(channel_id: int):
+    """
+    Вызывается из main.py patch_channel при сохранении настроек канала.
+    Решение владельца 02.08: "либо автоматическая — и тогда все посты
+    публикуются без подтверждения, либо нет — и тогда для каждого поста
+    нужно решение". Раньше переключение auto_publish не трогало уже
+    существующие посты: онбординг-черновик (status="pending", без
+    scheduled_at, force_pending=True при генерации) навсегда оставался
+    "Ждёт вашего решения" с кнопкой на зелёном фоне, даже если канал давно
+    переключили на автопилот -- владелец нашёл это на живом канале.
+
+    Синхронизация в обе стороны:
+    - Включили автопилот: "осиротевшие" pending-посты без scheduled_at
+      (только они и остаются в этом статусе -- см. force_pending) встают в
+      очередь как обычные посты автопилота, каждый на своё место
+      (_next_queue_slot, с учётом уже поставленных в этом же вызове).
+    - Включили подтверждение: посты, уже стоящие в очереди (status=
+      "scheduled") без активного подтверждения (остались от автопилота, где
+      подтверждение не заводится вовсе), получают обычный цикл -- дедлайн
+      равен уже назначенному scheduled_at, само время не меняется.
+    """
+    with session() as s:
+        channel = s.get(Channel, channel_id)
+        if not channel:
+            return
+
+        if channel.auto_publish:
+            orphans = s.exec(
+                select(Post).where(
+                    Post.channel_id == channel_id, Post.status == "pending",
+                    Post.scheduled_at.is_(None),  # force_pending -- только они остаются без времени
+                ).order_by(Post.created_at)
+            ).all()
+            for p in orphans:
+                p.status = "scheduled"
+                p.scheduled_at = _next_queue_slot(s, channel)
+                s.add(p)
+                s.commit()
+            return
+
+        scheduled_posts = s.exec(
+            select(Post).where(Post.channel_id == channel_id, Post.status == "scheduled")
+        ).all()
+        waiting_post_ids = {
+            a.post_id for a in s.exec(
+                select(PostApproval).where(PostApproval.channel_id == channel_id, PostApproval.status == "waiting")
+            ).all()
+        }
+        need_approval = [(p.id, p.scheduled_at) for p in scheduled_posts if p.id not in waiting_post_ids]
+
+    for post_id, deadline in need_approval:
+        try:
+            await _sync_approval_to_reschedule(post_id, deadline)
+        except Exception as e:
+            logger.warning(f"синхронизация режима, пост {post_id}: {e}")
+
+
 async def _handle_approval_callback(cq: dict):
     """Обрабатывает нажатие кнопки на карточке поста в личке."""
     cq_id = cq.get("id")

@@ -211,6 +211,23 @@ function renderTg(text) {
     .replace(/\n/g,"<br>");
 }
 
+// Пикеры даты/времени (showPicker/doSchedule, genQueuePost) используют
+// <input type="datetime-local"> -- браузер трактует его value как ЛОКАЛЬНОЕ
+// время без часового пояса. Раньше сюда клали/читали `.toISOString()`
+// (UTC) напрямую -- поле показывало и отправляло время со сдвигом на
+// часовой пояс пользователя (например, у пользователя в Москве вместо
+// 22:30 по Москве уходило 22:30 UTC = 01:30 следующего дня по Москве).
+// Найдено владельцем 02.08.
+function _toLocalDatetimeInputValue(date){
+  const pad=n=>String(n).padStart(2,"0");
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+function _localDatetimeInputToUTCISOString(value){
+  // value -- "YYYY-MM-DDTHH:mm" без таймзоны; new Date(...) в браузере
+  // парсит такую строку как ЛОКАЛЬНОЕ время -- ровно то, что ввёл человек.
+  return new Date(value).toISOString();
+}
+
 function toast(msg, kind="") {
   // Последний рубеж защиты (P0 fix): что бы ни передали в toast — никогда
   // не показываем [object Object] или другой нечитаемый JS-объект.
@@ -2257,8 +2274,14 @@ document.addEventListener("click",e=>{
 
 let _queueViewMode="list"; // "list" | "calendar" -- сбрасывается на "list" при каждом заходе на новый канал (см. renderChannel)
 
-async function renderQueue(){
-  $("tabbody").innerHTML=`<div id="postList"><div class="text-faint" style="padding:20px">Загрузка…</div></div>`;
+async function renderQueue(silent){
+  // silent -- фоновое обновление (поллинг генерации, см. _scheduleGeneratingPoll):
+  // владелец пожаловался, что экран целиком мигал "Загрузка…" каждые
+  // несколько секунд, пока очередь дозаполнялась -- раздражает и не несёт
+  // новой информации в 9 случаях из 10 (между тиками ничего не меняется).
+  // Молча обновляем данные и перерисовываем только список, без разрушения
+  // и пересоздания контейнера.
+  if(!silent || !$("postList")) $("tabbody").innerHTML=`<div id="postList"><div class="text-faint" style="padding:20px">Загрузка…</div></div>`;
   let posts=[];
   try{
     // Канал освежаем вместе с постами -- не только ради queue_target/
@@ -2290,7 +2313,7 @@ async function renderQueue(){
     }catch(e){}
   }
 
-  $("tabbody").innerHTML=`<div id="postList"></div>`;
+  if(!silent || !$("postList")) $("tabbody").innerHTML=`<div id="postList"></div>`;
   renderQueueBody();
 }
 
@@ -2420,21 +2443,31 @@ function _scheduleFirstPostsPoll(pendingCount){
     return;
   }
   _firstPostsPollTimer=setTimeout(()=>{
-    if(App.tab==="queue") renderQueue();
+    if(App.tab==="queue" && !Object.keys(_pendingPublish).length) renderQueue(true);
+    else _scheduleFirstPostsPoll(pendingCount);
   }, 15000);
 }
 
 // C14, пункт 6: пока Channel.generating_since (см. renderQueue -- канал
 // освежается вместе с постами) говорит, что фоновая догенерация идёт,
-// перечитываем очередь почаще, чтобы индикатор "генерируется следующий
-// пост" пропал сам, как только пост появится, без ручной перезагрузки.
+// перечитываем очередь, чтобы индикатор "генерируется следующий пост"
+// пропал сам, как только пост появится, без ручной перезагрузки.
+//
+// Найдено владельцем 02.08: при долгом дозаполнении очереди (несколько
+// постов подряд, каждый на своём тике) экран мигал "Загрузка…" каждые
+// несколько секунд подряд минутами -- обновление теперь тихое (см. silent
+// в renderQueue), интервал реже (было 4с), и не должно прерывать отсчёт
+// отмены "Опубликовать сейчас" -- renderQueueBody() снимает такие отсчёты
+// безусловно, а тихий фоновый поллинг не должен молча отменять решение,
+// которое человек в этот момент принимает.
 let _generatingPollTimer=null;
 function _scheduleGeneratingPoll(){
   if(_generatingPollTimer){clearTimeout(_generatingPollTimer);_generatingPollTimer=null;}
   if(!App._chan?.generating) return;
   _generatingPollTimer=setTimeout(()=>{
-    if(App.tab==="queue") renderQueue();
-  }, 4000);
+    if(App.tab==="queue" && !Object.keys(_pendingPublish).length) renderQueue(true);
+    else _scheduleGeneratingPoll(); // отсчёт отмены идёт -- не мешаем, попробуем позже
+  }, 8000);
 }
 
 // Когда ближайший дедлайн автопубликации истекает, пост публикуется на
@@ -2677,7 +2710,7 @@ function toggleQueueGenPicker(){
   const el=$("queue_gen_picker"); if(!el) return;
   el.classList.toggle("hidden");
   const dt=$("queue_gen_dt");
-  if(dt && !dt.value) dt.value=new Date(Date.now()+3600000).toISOString().slice(0,16);
+  if(dt && !dt.value) dt.value=_toLocalDatetimeInputValue(new Date(Date.now()+3600000));
 }
 
 let _genQueueInFlight=false;
@@ -2688,7 +2721,7 @@ async function genQueuePost(useTime){
   if(useTime){
     const dt=$("queue_gen_dt");
     if(!dt||!dt.value) return toast("Выберите дату","err");
-    payload={scheduled_at:dt.value};
+    payload={scheduled_at:_localDatetimeInputToUTCISOString(dt.value)};
   }
   _genQueueInFlight=true;
   const btn=$("queue_gen_btn");
@@ -3763,12 +3796,14 @@ async function toggleChannelEnabled(){
 
 function showPicker(id){
   const p=$("picker_"+id);if(!p) return;p.classList.remove("hidden");
-  const dt=$("dt_"+id);if(dt) dt.value=new Date(Date.now()+3600000).toISOString().slice(0,16);
+  const dt=$("dt_"+id);if(dt) dt.value=_toLocalDatetimeInputValue(new Date(Date.now()+3600000));
 }
 async function doSchedule(id){
   const dt=$("dt_"+id);if(!dt||!dt.value) return toast("Выберите дату","err");
-  try{await api("POST","/posts/"+id+"/schedule",{scheduled_at:dt.value});toast("Запланировано ✓","ok");renderQueue();}
-  catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
+  try{
+    await api("POST","/posts/"+id+"/schedule",{scheduled_at:_localDatetimeInputToUTCISOString(dt.value)});
+    toast("Запланировано ✓","ok");renderQueue();
+  }catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
 }
 function toggleEdit(id){
   const ta=$("pt_"+id),pw=$("ppreview_"+id),sb=$("save_"+id);if(!ta) return;

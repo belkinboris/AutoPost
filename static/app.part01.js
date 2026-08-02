@@ -211,6 +211,23 @@ function renderTg(text) {
     .replace(/\n/g,"<br>");
 }
 
+// Пикеры даты/времени (showPicker/doSchedule, genQueuePost) используют
+// <input type="datetime-local"> -- браузер трактует его value как ЛОКАЛЬНОЕ
+// время без часового пояса. Раньше сюда клали/читали `.toISOString()`
+// (UTC) напрямую -- поле показывало и отправляло время со сдвигом на
+// часовой пояс пользователя (например, у пользователя в Москве вместо
+// 22:30 по Москве уходило 22:30 UTC = 01:30 следующего дня по Москве).
+// Найдено владельцем 02.08.
+function _toLocalDatetimeInputValue(date){
+  const pad=n=>String(n).padStart(2,"0");
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+function _localDatetimeInputToUTCISOString(value){
+  // value -- "YYYY-MM-DDTHH:mm" без таймзоны; new Date(...) в браузере
+  // парсит такую строку как ЛОКАЛЬНОЕ время -- ровно то, что ввёл человек.
+  return new Date(value).toISOString();
+}
+
 function toast(msg, kind="") {
   // Последний рубеж защиты (P0 fix): что бы ни передали в toast — никогда
   // не показываем [object Object] или другой нечитаемый JS-объект.
