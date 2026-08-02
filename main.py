@@ -706,6 +706,11 @@ def _channel_dict(s, ch: Channel) -> dict:
     # честно показать, докуда вообще можно увеличивать (C14, владелец 01.08).
     d["queue_target"] = tasks.MIN_QUEUE
     d["queue_ceiling"] = tasks.MIN_QUEUE
+    # Нижняя граница степпера приходит с сервера по той же причине, что и
+    # потолок: раньше фронт рисовал варианты списком [3,4,5,6,7], записанным
+    # руками, и после снижения минимума до 1 они разошлись бы с зажимом в
+    # patch_channel молча -- кнопка была бы, а значение не сохранялось бы.
+    d["queue_min_depth"] = tasks.MIN_QUEUE_DEPTH
     try:
         d["queue_target"] = tasks.queue_target_for_user(s, ch.user_id, ch)
         d["queue_ceiling"] = tasks.queue_target_for_user(s, ch.user_id)
@@ -953,13 +958,16 @@ async def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depend
             payload["interval_jitter_minutes"] = max(0, min(int(payload["interval_jitter_minutes"]), 120))
         if "queue_depth" in payload:
             # Настраиваемая глубина очереди (C14, владелец 01.08): зажимаем
-            # в [MIN_QUEUE, потолок тарифа] здесь же, при записи -- иначе
-            # бесплатный пользователь мог бы сохранить queue_depth=7, который
-            # молча ничего не делает (queue_target_for_user всё равно обрежет
-            # его до потолка при чтении), и не понимать, почему очередь не
-            # растёт (правило 5: интерфейс не обещает того, чего нет).
+            # в [MIN_QUEUE_DEPTH, потолок тарифа] здесь же, при записи --
+            # иначе бесплатный пользователь мог бы сохранить queue_depth=7,
+            # который молча ничего не делает (queue_target_for_user всё равно
+            # обрежет его до потолка при чтении), и не понимать, почему
+            # очередь не растёт (правило 5: интерфейс не обещает того, чего
+            # нет). Нижняя граница -- 1: владелец 02.08 попросил разрешить
+            # «держать наготове ровно один пост».
             ceiling = tasks.queue_target_for_user(s, user.id)
-            payload["queue_depth"] = max(tasks.MIN_QUEUE, min(payload["queue_depth"], ceiling))
+            payload["queue_depth"] = max(tasks.MIN_QUEUE_DEPTH,
+                                         min(payload["queue_depth"], ceiling))
         # При возобновлении ставим last_generated_at = now
         # чтобы следующая авто-генерация была через полный интервал, а не немедленно
         if payload.get("enabled") is True and not ch.enabled:

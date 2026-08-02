@@ -244,13 +244,26 @@ function startNearestCountdown(){
 // здесь каналов обычно немного и у каждого свой независимый таймер —
 // тикаем все сразу одним интервалом.
 let _dashCountdownTimer=null;
+// Тикают две разные вещи: подстрока карточки канала (когда пост выйдет --
+// data-publish-countdown, обе ветки режима) и отсчёт на карточке поста
+// (data-approval-countdown). Формулировку берём из общей функции
+// _publishCountdownText, а не пишем здесь заново: разъехавшиеся формулы
+// первой отрисовки и тика уже давали текст, который менялся сам собой
+// через секунду после появления.
 function startDashboardCountdowns(){
   if(_dashCountdownTimer){clearInterval(_dashCountdownTimer);_dashCountdownTimer=null;}
-  if(!document.querySelector("[data-approval-countdown]")) return;
+  const SEL="[data-approval-countdown],[data-publish-countdown]";
+  if(!document.querySelector(SEL)) return;
   const tick=()=>{
-    const els=document.querySelectorAll("[data-approval-countdown]");
+    const els=document.querySelectorAll(SEL);
     if(!els.length){clearInterval(_dashCountdownTimer);_dashCountdownTimer=null;return;}
     els.forEach(el=>{
+      if(el.dataset.publishCountdown){
+        const targetMs=parseInt(el.dataset.publishCountdown,10);
+        if(!targetMs) return;
+        el.textContent=_publishCountdownText(el.dataset.publishKind, targetMs-Date.now());
+        return;
+      }
       const targetMs=parseInt(el.dataset.approvalCountdown||"0",10);
       if(!targetMs) return;
       const diff=targetMs-Date.now();

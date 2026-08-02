@@ -103,15 +103,16 @@ function renderChanCard(c){
   } else {
     statusLabel="Вы подтверждаете каждый пост"; dotClass="status-dot-accent";
   }
-  // Подстрока одна и та же для обоих режимов: она отвечает на вопрос «когда
-  // мы напишем следующий пост», а после C14 очередь пополняется одинаково.
-  subLine=_nextGenerationLabel(c);
-
-  const countdownAttr=(!c.auto_publish && c.approval_deadline)
-    ? ` data-approval-countdown="${new Date(c.approval_deadline).getTime()}"` : "";
-  const sublineHtml=countdownAttr
-    ? `<div class="status-subline"${countdownAttr}>⏱ считаем…</div>`
-    : `<div class="status-subline">${esc(subLine)}</div>`;
+  // Подстрока отвечает на вопрос «когда пост увидят подписчики», а не «когда
+  // мы его напишем» (владелец 02.08): генерация -- внутренняя кухня, она
+  // важна только когда публиковать ещё нечего. Обе ветки режима внутри
+  // _nextPublishInfo, здесь остаётся только отрисовка.
+  const pub=_nextPublishInfo(c);
+  // Атрибут — не только для тика: без него первая отрисовка и тик считали
+  // время по разным формулам и через секунду текст менялся сам собой.
+  const sublineHtml=pub.at
+    ? `<div class="status-subline" data-publish-countdown="${pub.at}" data-publish-kind="${pub.kind}">${esc(pub.text)}</div>`
+    : `<div class="status-subline">${esc(pub.text)}</div>`;
 
   // renderTg(), не esc(): next_post_preview содержит настоящую Telegram-разметку
   // (<b>/<i> как в посте) — esc() экранировал её в текст, и в превью буквально

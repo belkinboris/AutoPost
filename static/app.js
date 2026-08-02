@@ -575,6 +575,67 @@ function _intervalLabel(h){
     ? `каждые ${d} ${_plural(d,"день","дня","дней")}`
     : `каждые ${h} ${_plural(h,"час","часа","часов")}`;
 }
+// Текст обратного отсчёта на карточке канала. Один и тот же и для первой
+// отрисовки, и для тика раз в секунду (startDashboardCountdowns) -- иначе
+// они разъезжаются: так на карточке уже висело «⏱ через 4350:00», потому
+// что тикающий формат MM:SS остался от времён, когда дедлайн был 30 минут,
+// а после C14 он равен времени поста в очереди, то есть дням.
+function _publishCountdownText(kind, diff){
+  if(kind==="auto"){
+    return diff>0 ? `📤 Опубликуем через ${humanDuration(diff)}` : "📤 Публикуем…";
+  }
+  if(kind==="confirm-timer"){
+    // Таймер есть только когда карточка реально доставлена в Телеграм
+    // (см. правило 4 в CLAUDE.md). Он НЕ публикует -- он переносит.
+    return diff>0
+      ? `📝 Ждём решения — через ${humanDuration(diff)} перенесём в конец очереди`
+      : "📝 Время вышло — переносим пост в конец очереди";
+  }
+  return diff>0
+    ? `📝 Место в очереди — через ${humanDuration(diff)}, ждёт вашей кнопки`
+    : "📝 Время подошло — пост ждёт вашей кнопки";
+}
+
+// Что происходит с ближайшим постом канала: когда он выйдет (автопилот) или
+// когда подойдёт его место в очереди (режим подтверждения).
+//
+// Владелец 02.08: на карточке канала было написано время следующей
+// ГЕНЕРАЦИИ, а человека интересует публикация — когда пост увидят
+// подписчики. Генерация -- внутренняя кухня, она важна только когда
+// публиковать ещё нечего; тогда и показываем её (последняя ветка).
+//
+// Возвращает {text, at, kind}: `at` -- время в миллисекундах для живого
+// отсчёта (null, если отсчитывать нечего), `kind` -- какая из формулировок
+// выше верна для этого канала.
+function _nextPublishInfo(c){
+  if(c.enabled===false) return {text:"⏸ На паузе — ничего не публикуется", at:null, kind:null};
+  // Публиковать некуда: без подтверждённого бота tick() этот канал не берёт
+  // вообще (см. `c.verified` в tasks.tick), и любое время публикации здесь
+  // было бы обещанием, которого система не выполняет.
+  if(!c.tg_chat || !c.verified) return {text:"⚠️ Канал не подключён — публиковать некуда", at:null, kind:null};
+
+  if(c.next_post_at){
+    if(c.auto_publish){
+      const at=new Date(c.next_post_at).getTime();
+      return {text:_publishCountdownText("auto", at-Date.now()), at, kind:"auto"};
+    }
+    // Режим подтверждения. Если карточка в Телеграм доставлена, у поста
+    // идёт таймер переноса (approval_deadline == scheduled_at после C14) --
+    // тогда честнее считать по нему, он и есть то, что произойдёт само.
+    const kind=c.approval_deadline?"confirm-timer":"confirm";
+    const at=new Date(c.approval_deadline||c.next_post_at).getTime();
+    return {text:_publishCountdownText(kind, at-Date.now()), at, kind};
+  }
+
+  // Пост без времени в очереди (онбординг-черновик) -- публиковать по
+  // расписанию нечего, но пост есть и ждёт человека.
+  if((c.queue_count||0)>0) return {text:"📝 Пост готов и ждёт вашего решения", at:null, kind:null};
+
+  // Публиковать нечего вообще -- вот теперь про генерацию: это единственный
+  // случай, когда «когда напишем» и есть ответ на «когда выйдет».
+  return {text:_nextGenerationLabel(c), at:null, kind:null};
+}
+
 // Возвращает готовую строку под заголовком карточки канала целиком (вместе
 // со значком), а не хвост чужой фразы: у состояний разный смысл и разный
 // значок, и склеивать их с одним общим началом «⏱ Следующая генерация …»
@@ -712,15 +773,16 @@ function renderChanCard(c){
   } else {
     statusLabel="Вы подтверждаете каждый пост"; dotClass="status-dot-accent";
   }
-  // Подстрока одна и та же для обоих режимов: она отвечает на вопрос «когда
-  // мы напишем следующий пост», а после C14 очередь пополняется одинаково.
-  subLine=_nextGenerationLabel(c);
-
-  const countdownAttr=(!c.auto_publish && c.approval_deadline)
-    ? ` data-approval-countdown="${new Date(c.approval_deadline).getTime()}"` : "";
-  const sublineHtml=countdownAttr
-    ? `<div class="status-subline"${countdownAttr}>⏱ считаем…</div>`
-    : `<div class="status-subline">${esc(subLine)}</div>`;
+  // Подстрока отвечает на вопрос «когда пост увидят подписчики», а не «когда
+  // мы его напишем» (владелец 02.08): генерация -- внутренняя кухня, она
+  // важна только когда публиковать ещё нечего. Обе ветки режима внутри
+  // _nextPublishInfo, здесь остаётся только отрисовка.
+  const pub=_nextPublishInfo(c);
+  // Атрибут — не только для тика: без него первая отрисовка и тик считали
+  // время по разным формулам и через секунду текст менялся сам собой.
+  const sublineHtml=pub.at
+    ? `<div class="status-subline" data-publish-countdown="${pub.at}" data-publish-kind="${pub.kind}">${esc(pub.text)}</div>`
+    : `<div class="status-subline">${esc(pub.text)}</div>`;
 
   // renderTg(), не esc(): next_post_preview содержит настоящую Telegram-разметку
   // (<b>/<i> как в посте) — esc() экранировал её в текст, и в превью буквально
@@ -2264,13 +2326,26 @@ function startNearestCountdown(){
 // здесь каналов обычно немного и у каждого свой независимый таймер —
 // тикаем все сразу одним интервалом.
 let _dashCountdownTimer=null;
+// Тикают две разные вещи: подстрока карточки канала (когда пост выйдет --
+// data-publish-countdown, обе ветки режима) и отсчёт на карточке поста
+// (data-approval-countdown). Формулировку берём из общей функции
+// _publishCountdownText, а не пишем здесь заново: разъехавшиеся формулы
+// первой отрисовки и тика уже давали текст, который менялся сам собой
+// через секунду после появления.
 function startDashboardCountdowns(){
   if(_dashCountdownTimer){clearInterval(_dashCountdownTimer);_dashCountdownTimer=null;}
-  if(!document.querySelector("[data-approval-countdown]")) return;
+  const SEL="[data-approval-countdown],[data-publish-countdown]";
+  if(!document.querySelector(SEL)) return;
   const tick=()=>{
-    const els=document.querySelectorAll("[data-approval-countdown]");
+    const els=document.querySelectorAll(SEL);
     if(!els.length){clearInterval(_dashCountdownTimer);_dashCountdownTimer=null;return;}
     els.forEach(el=>{
+      if(el.dataset.publishCountdown){
+        const targetMs=parseInt(el.dataset.publishCountdown,10);
+        if(!targetMs) return;
+        el.textContent=_publishCountdownText(el.dataset.publishKind, targetMs-Date.now());
+        return;
+      }
       const targetMs=parseInt(el.dataset.approvalCountdown||"0",10);
       if(!targetMs) return;
       const diff=targetMs-Date.now();
@@ -2436,7 +2511,8 @@ function renderQueueBody(){
     // вообще держит наготове (раньше это число нигде не было видно, и понять
     // "сколько постов должно быть в очереди" было невозможно), и дают явный
     // способ создать пост прямо сейчас, не уходя в настройки.
-    html+=_renderQueueSlots(pending.length, minQueue, (App.user?.token_balance||0)<=0, !!c.generating);
+    html+=_renderQueueSlots(pending.length, minQueue, (App.user?.token_balance||0)<=0,
+                            !!c.generating, c.queue_ceiling||minQueue);
   }
   if(history.length){
     html+=`<div style="margin-top:20px">
@@ -2519,6 +2595,14 @@ function _scheduleApprovalRefresh(pending){
 // Отвечает на три вопроса, на которые интерфейс раньше не отвечал вообще:
 // сколько постов в очереди, когда появится следующий и что вообще будет с
 // готовым постом. Формулировки — с явными подлежащими, без канцелярита.
+// Прокрутка к карточке автоматизации в настройках. Одна на все места, где
+// мы отправляем человека «в настройки очереди»: раньше эта строка жила
+// копией внутри _renderQueueStatus, и вторая копия в слоте очереди
+// разъехалась бы с ней при первом же переименовании якоря.
+function _settingsQueueLink(){
+  return `onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)"`;
+}
+
 function _renderQueueStatus(c, pendingCount, opts){
   const {minQueue, connected, paused} = opts;
   // «N из M»: знаменатель показываем ВСЕГДА, в том числе когда N > M.
@@ -2536,7 +2620,7 @@ function _renderQueueStatus(c, pendingCount, opts){
   const overflowLine = pendingCount > minQueue
     ? ` Сейчас постов больше запаса: готовые никуда не денутся, а новые мы начнём писать, когда их останется меньше ${minQueue}.`
     : "";
-  const settingsLink = `onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)"`;
+  const settingsLink = _settingsQueueLink();
 
   if(paused){
     return `<div class="card" style="background:var(--surface2);border:none;margin-bottom:14px;padding:14px 16px">
@@ -2605,7 +2689,10 @@ function _renderQueueStatus(c, pendingCount, opts){
     return `<div class="card" style="background:var(--blue-bg);border:none;margin-bottom:14px;padding:14px 16px">
       <div style="font-size:13px;color:var(--blue);font-weight:600">Автопилот включён</div>
       <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
-        Мы сами пишем и публикуем посты — ${_intervalLabel(c.interval_hours||12)}. Подтверждать ничего не нужно. В очереди ${counter}.${overflowLine}
+        Мы сами пишем и публикуем посты — ${_intervalLabel(c.interval_hours||12)}. Подтверждать ничего не нужно. В очереди ${counter}.${overflowLine}${
+        pendingCount >= minQueue && !overflowLine
+          ? " Запас набран — следующий напишем после ближайшей публикации."
+          : ""}
       </div>
       <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--blue)" ${settingsLink}>Изменить</button>
     </div>`;
@@ -2628,7 +2715,7 @@ function _renderQueueStatus(c, pendingCount, opts){
   // не пишет ничего, сколько бы времени ни прошло. Место освобождает
   // публикация -- это и говорим.
   const refillLine = pendingCount < minQueue
-    ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
+    ? `Ещё ${minQueue - pendingCount} ${_plural(minQueue - pendingCount, "пост", "поста", "постов")} мы готовим — обычно это занимает пару минут.`
     : `Запас набран — следующий пост мы напишем, когда в очереди освободится место, то есть после ближайшей публикации.${overflowLine}`;
 
   // Механику «кнопка или таймер» показываем только когда постов ещё нет.
@@ -2696,9 +2783,47 @@ function toggleQueueHelp(){
 // собирается. Баннер _renderQueueStatus уже объясняет это выше, но именно
 // пустой слот -- то место, где человек и тянется нажать кнопку, поэтому
 // объяснение нужно продублировать прямо здесь (правило 5 в CLAUDE.md).
-function _renderQueueSlots(pendingCount, minQueue, tokensExhausted, generating){
+function _renderQueueSlots(pendingCount, minQueue, tokensExhausted, generating, ceiling){
   const missing = Math.max(0, minQueue - pendingCount);
-  if(!missing) return "";
+  // Запас набран -- раньше здесь просто ничего не рисовалось, вместе с
+  // кнопкой «Написать пост сейчас». При очереди из одного поста (владелец
+  // 02.08 попросил разрешить такую глубину) пустое место под единственным
+  // постом читается как «дальше ничего не будет», а способа увеличить
+  // запас на экране не видно вовсе -- он в настройках.
+  //
+  // Кнопку без времени здесь НЕ показываем сознательно: при полной очереди
+  // сервер отвечает на неё «Очередь уже заполнена» (generate_channel,
+  // respect_queue_depth), и предлагать действие, которое заведомо не
+  // сработает, значит обещать несуществующее (правило 5 в CLAUDE.md).
+  // Работает только путь с явным временем -- его и предлагаем.
+  if(!missing){
+    // Про «запас набран, следующий напишем после ближайшей публикации» здесь
+    // сознательно ни слова: это уже сказано в карточке статуса над очередью
+    // (обе ветки _renderQueueStatus). Слот отвечает на другой вопрос -- что
+    // человек может с этим сделать. Проверено на скриншоте: с обеими
+    // фразами экран повторял одну мысль дважды подряд.
+    const canGrow = (ceiling||minQueue) > minQueue;
+    const growLine = canGrow
+      ? `Хотите держать наготове больше — увеличьте «Глубину очереди» в настройках: сейчас ${minQueue}, можно до ${ceiling}.`
+      : `Больше на вашем тарифе не держим.`;
+    // Без queue-slot-muted: приглушённый стиль сделан для мест, которые мы
+    // не можем заполнить (кончились токены), а здесь -- живая подсказка с
+    // двумя кнопками, и на скриншоте она читалась хуже, чем должна.
+    return `<div class="queue-slot">
+      <div class="queue-slot-hint">${growLine}</div>
+      <div style="display:flex;gap:6px;align-items:center;justify-content:center;margin-top:10px">
+        <button class="btn-ghost btn-sm" ${_settingsQueueLink()}>Настройки очереди</button>
+        <button class="btn-ghost btn-sm" title="Написать пост на выбранное время" onclick="toggleQueueGenPicker()">📅 Написать на своё время</button>
+      </div>
+      <div id="queue_gen_picker" class="hidden" style="margin-top:10px;padding:12px;background:var(--surface2);border-radius:10px;border:1px solid var(--border-soft)">
+        <div class="row" style="gap:8px">
+          <input type="datetime-local" id="queue_gen_dt" style="flex:1">
+          <button class="btn btn-sm" onclick="genQueuePost(true)">Написать</button>
+          <button class="btn-ghost btn-sm" onclick="$('queue_gen_picker').classList.add('hidden')">✕</button>
+        </div>
+      </div>
+    </div>`;
+  }
   // Рисуем не больше трёх заглушек: у оплатившего цель очереди 7, и при одном
   // готовом посте шесть пунктирных рамок подряд превратили бы экран в забор.
   // Точное число недостающих постов и так названо словами в статусе выше.
@@ -2882,7 +3007,14 @@ function renderQueueCalendar(posts, forecastSlots){
 function _renderQueueDepthRow(c){
   const ceiling = c.queue_ceiling || 3;
   const current = c.queue_depth || c.queue_target || 3;
-  const options = [3,4,5,6,7];
+  // Границы приходят с сервера: список, записанный руками, разошёлся бы с
+  // зажимом в patch_channel молча -- кнопка была бы, а значение не
+  // сохранялось бы. Минимум 1 (владелец 02.08): «держать наготове ровно
+  // один пост» -- законный сценарий, человек хочет видеть следующий пост и
+  // решать по нему, а не разбирать запас на неделю.
+  const minDepth = c.queue_min_depth || 1;
+  const options = [];
+  for(let n=minDepth;n<=7;n++) options.push(n);
   // Подсказка называла условие, которого в коде нет: потолок поднимает не
   // тариф «Про», а ЛЮБОЙ платёж со статусом paid (tasks.queue_target_for_user
   // ищет просто `Payment.status == "paid"`, User.plan там не участвует).
