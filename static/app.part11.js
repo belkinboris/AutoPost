@@ -14,7 +14,19 @@ let _queueViewMode="list"; // "list" | "calendar" -- сбрасывается н
 async function renderQueue(){
   $("tabbody").innerHTML=`<div id="postList"><div class="text-faint" style="padding:20px">Загрузка…</div></div>`;
   let posts=[];
-  try{posts=await api("GET","/channels/"+App._chan.id+"/posts");}catch(e){}
+  try{
+    // Канал освежаем вместе с постами -- не только ради queue_target/
+    // queue_ceiling, но и ради c.generating (C14, пункт 6): это поле живёт
+    // на канале, а не на постах, и без повторного запроса индикатор
+    // "генерируется следующий пост" не исчез бы после завершения генерации
+    // без ручной перезагрузки страницы.
+    const [freshChan, freshPosts] = await Promise.all([
+      api("GET","/channels/"+App._chan.id),
+      api("GET","/channels/"+App._chan.id+"/posts"),
+    ]);
+    App._chan=freshChan;
+    posts=freshPosts;
+  }catch(e){}
   App._queuePosts=posts; // календарь и переключение вида работают без повторного запроса
 
   // Прогноз автопубликаций для календаря -- только у автопилота: без него
@@ -127,7 +139,7 @@ function renderQueueBody(){
     // вообще держит наготове (раньше это число нигде не было видно, и понять
     // "сколько постов должно быть в очереди" было невозможно), и дают явный
     // способ создать пост прямо сейчас, не уходя в настройки.
-    html+=_renderQueueSlots(pending.length, minQueue, (App.user?.token_balance||0)<=0);
+    html+=_renderQueueSlots(pending.length, minQueue, (App.user?.token_balance||0)<=0, !!c.generating);
   }
   if(history.length){
     html+=`<div style="margin-top:20px">
@@ -140,6 +152,7 @@ function renderQueueBody(){
   }
   $("postList").innerHTML=html;
   _scheduleFirstPostsPoll(pending.length);
+  _scheduleGeneratingPoll();
   startNearestCountdown();
   // Тикает все карточки с реальным дедлайном автопубликации (см.
   // data-approval-countdown в renderPostCard). Функция сама выходит, если
@@ -163,6 +176,19 @@ function _scheduleFirstPostsPoll(pendingCount){
   _firstPostsPollTimer=setTimeout(()=>{
     if(App.tab==="queue") renderQueue();
   }, 15000);
+}
+
+// C14, пункт 6: пока Channel.generating_since (см. renderQueue -- канал
+// освежается вместе с постами) говорит, что фоновая догенерация идёт,
+// перечитываем очередь почаще, чтобы индикатор "генерируется следующий
+// пост" пропал сам, как только пост появится, без ручной перезагрузки.
+let _generatingPollTimer=null;
+function _scheduleGeneratingPoll(){
+  if(_generatingPollTimer){clearTimeout(_generatingPollTimer);_generatingPollTimer=null;}
+  if(!App._chan?.generating) return;
+  _generatingPollTimer=setTimeout(()=>{
+    if(App.tab==="queue") renderQueue();
+  }, 4000);
 }
 
 // Когда ближайший дедлайн автопубликации истекает, пост публикуется на
@@ -351,13 +377,22 @@ function toggleQueueHelp(){
 // собирается. Баннер _renderQueueStatus уже объясняет это выше, но именно
 // пустой слот -- то место, где человек и тянется нажать кнопку, поэтому
 // объяснение нужно продублировать прямо здесь (правило 5 в CLAUDE.md).
-function _renderQueueSlots(pendingCount, minQueue, tokensExhausted){
+function _renderQueueSlots(pendingCount, minQueue, tokensExhausted, generating){
   const missing = Math.max(0, minQueue - pendingCount);
   if(!missing) return "";
   // Рисуем не больше трёх заглушек: у оплатившего цель очереди 7, и при одном
   // готовом посте шесть пунктирных рамок подряд превратили бы экран в забор.
   // Точное число недостающих постов и так названо словами в статусе выше.
   const shown = Math.min(missing, 3);
+  // C14, пункт 6 (владелец 01.08): пока идёт фоновая догенерация -- строка
+  // "генерируется следующий пост" НАД кнопкой, а не вместо неё (кнопка
+  // остаётся рабочей: пользователь может параллельно написать ещё один
+  // пост вручную, это независимые действия). generating -- реальный флаг
+  // с сервера (Channel.generating_since через tasks._set_generating), а не
+  // декоративный таймер на фиксированное время (правило 5 в CLAUDE.md).
+  const generatingLine = generating
+    ? `<div class="queue-slot-hint" style="display:flex;align-items:center;gap:6px;justify-content:center;margin-bottom:8px"><span class="spinner"></span> Генерируется следующий пост…</div>`
+    : "";
   let out = "";
   for(let i=0;i<shown;i++){
     if(tokensExhausted){
@@ -371,6 +406,7 @@ function _renderQueueSlots(pendingCount, minQueue, tokensExhausted){
     }
     out += i===0
       ? `<div class="queue-slot">
+           ${generatingLine}
            <div style="display:flex;gap:6px;align-items:center;justify-content:center">
              <button class="btn-outline btn-sm" id="queue_gen_btn" onclick="genQueuePost()">+ Написать пост сейчас</button>
              <button class="btn-ghost btn-sm" title="Выбрать время публикации" onclick="toggleQueueGenPicker()">📅</button>

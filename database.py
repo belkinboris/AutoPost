@@ -88,6 +88,15 @@ class Channel(SQLModel, table=True):
     # старое поведение без явного выбора: используется весь потолок тарифа
     # целиком, как до появления этой настройки.
     queue_depth: Optional[int] = None
+    # Момент начала текущей генерации поста (C14, пункт 6 из видения
+    # владельца 01.08: "генерируется следующий пост" под последним постом
+    # очереди). Выставляется в начале tasks.generate_for_channel и снимается
+    # в конце (см. _set_generating) -- отражает реальную работу на сервере,
+    # а не декоративный таймер: если генерация упадёт по исключению, флаг
+    # снимется всё равно (try/finally), а по возрасту больше нескольких
+    # минут фронт и API считают его протухшим (сервер мог перезапуститься
+    # посреди генерации) -- см. _channel_dict.
+    generating_since: Optional[datetime] = None
 
 
 class ChannelRule(SQLModel, table=True):
@@ -483,6 +492,21 @@ def _add_missing_columns():
                 logger.info("Миграция: добавлена колонка channel.queue_depth")
     except Exception:
         logger.exception("Миграция channel.queue_depth не удалась")
+
+    # Channel.generating_since -- индикатор "генерируется следующий пост"
+    # (C14, решение владельца 01.08), см. класс Channel.
+    try:
+        inspector = inspect(engine)
+        if "channel" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("channel")}
+            if "generating_since" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE channel ADD COLUMN generating_since TIMESTAMP"
+                    ))
+                logger.info("Миграция: добавлена колонка channel.generating_since")
+    except Exception:
+        logger.exception("Миграция channel.generating_since не удалась")
 
 
 def init_db():

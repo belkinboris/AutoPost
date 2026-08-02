@@ -116,8 +116,40 @@ def _find_duplicate(text: str, existing: list) -> tuple:
     return (best, score) if score >= DUPLICATE_THRESHOLD else (None, score)
 
 
+async def _set_generating(channel_id: int, on: bool):
+    """
+    Индикатор "генерируется следующий пост" (C14, пункт 6 из видения
+    владельца 01.08) -- отдельная короткая транзакция до/после generate_for_channel,
+    а не часть его основной сессии: должна пережить и успех, и падение
+    generate_for_channel одинаково (см. вызов через try/finally ниже).
+    """
+    with session() as s:
+        channel = s.get(Channel, channel_id)
+        if not channel:
+            return
+        channel.generating_since = datetime.utcnow() if on else None
+        s.add(channel)
+        s.commit()
+
+
 async def generate_for_channel(channel_id: int, topic: str = "", force_pending: bool = False,
                                 target_scheduled_at: Optional[datetime] = None) -> dict:
+    """
+    Тонкая обёртка вокруг _generate_for_channel_impl -- выставляет
+    Channel.generating_since ДО тяжёлой работы (классификация темы, поиск,
+    сам запрос к модели) и снимает его ПОСЛЕ, независимо от результата
+    (try/finally: исключение внутри генерации не должно оставить канал
+    навсегда "генерирующим" на экране).
+    """
+    await _set_generating(channel_id, True)
+    try:
+        return await _generate_for_channel_impl(channel_id, topic, force_pending, target_scheduled_at)
+    finally:
+        await _set_generating(channel_id, False)
+
+
+async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pending: bool = False,
+                                      target_scheduled_at: Optional[datetime] = None) -> dict:
     with session() as s:
         channel = s.get(Channel, channel_id)
         if not channel:
