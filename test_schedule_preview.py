@@ -151,3 +151,60 @@ async def test_verified_autopilot_channel_gets_real_forecast(client, token):
     slots = r.json()["slots"]
     assert len(slots) == 30
     assert slots[0].endswith("Z")
+
+
+async def test_forecast_continues_the_queue_instead_of_arguing_with_it(client, token):
+    """Аудит 02.08: прогноз считался от `channel.last_generated_at`, а
+    настоящая очередь строится от времени ПОСЛЕДНЕГО поста в ней
+    (`_next_queue_slot` -> `_next_slot_after` от `last.scheduled_at`).
+    При очереди из четырёх постов раз в сутки эти две арифметики расходились
+    на трое суток: календарь рисовал «ожидается по расписанию» поверх дней,
+    на которые уже стоят настоящие посты, и чем длиннее очередь и дальше
+    горизонт, тем сильнее врал.
+
+    Проверяем не формулу, а стык: первый прогнозный слот обязан совпасть с
+    тем, что вернёт `_next_queue_slot` для этого же канала -- то есть с
+    временем, которое реально получит следующий написанный пост.
+    """
+    r = await client.post("/api/channels", json={
+        "title": "Очередь", "about": "тема", "tg_chat": "@forecast_queue_demo",
+        "auto_publish": True, "interval_hours": 24,
+    }, headers={"Authorization": f"Bearer {token}"})
+    r.raise_for_status()
+    cid = r.json()["id"]
+
+    now = datetime.utcnow()
+    with database.session() as s:
+        ch = s.get(Channel, cid)
+        ch.verified = True
+        ch.interval_jitter_minutes = 0
+        # Окно публикации не задаём: оно двигает слоты и здесь только мешало
+        # бы увидеть само расхождение.
+        ch.publish_window_start = ""
+        ch.publish_window_end = ""
+        ch.last_generated_at = now
+        s.add(ch)
+        # Очередь из четырёх постов на четверо суток вперёд -- именно та
+        # ситуация, в которой старый прогноз промахивался на три интервала.
+        for i in range(1, 5):
+            s.add(database.Post(channel_id=cid, user_id=ch.user_id, text=f"пост {i}",
+                                status="scheduled", scheduled_at=now + timedelta(days=i)))
+        s.commit()
+
+    with database.session() as s:
+        expected = tasks._next_queue_slot(s, s.get(Channel, cid))
+
+    r = await client.get(f"/api/channels/{cid}/schedule_preview",
+                         headers={"Authorization": f"Bearer {token}"})
+    r.raise_for_status()
+    slots = [datetime.fromisoformat(x.rstrip("Z")) for x in r.json()["slots"]]
+
+    assert slots, "прогноз пуст — календарю нечего рисовать"
+    # Секунда допуска: прогноз и очередь считаются в разные моменты времени.
+    assert abs((slots[0] - expected).total_seconds()) < 60, (
+        f"прогноз начинается с {slots[0]}, а следующий пост встанет на {expected}"
+    )
+    # И, для наглядности: прогноз идёт ПОСЛЕ уже стоящих постов, а не поверх них.
+    assert slots[0] > now + timedelta(days=4), (
+        "прогноз накладывается на дни, где уже стоят настоящие посты"
+    )

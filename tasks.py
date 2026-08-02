@@ -1402,11 +1402,24 @@ async def post_publish_followup(post_id: int):
             logger.warning(f"auto-refill failed для поста {post_id}: {e}")
 
 
-def project_upcoming_slots(channel: Channel, now: datetime, count: int = 30) -> list:
+def project_upcoming_slots(channel: Channel, now: datetime, count: int = 30,
+                           anchor: Optional[datetime] = None) -> list:
     """Прогноз следующих `count` моментов автопубликации по ТЕКУЩИМ настройкам
     расписания -- для календаря в кабинете (владелец 28.07 попросил, чтобы
     смена частоты сразу отражалась в календаре, а не только в момент, когда
     пост реально опубликован).
+
+    `anchor` -- от чего отсчитывать первый прогнозный слот в режиме
+    "интервал". Аудит 02.08: раньше отсчёт всегда шёл от
+    `channel.last_generated_at`, а настоящая очередь строится от времени
+    ПОСЛЕДНЕГО поста в ней (`_next_queue_slot` -> `_next_slot_after`
+    от `last.scheduled_at`). При очереди из четырёх постов эти две
+    арифметики расходились на три интервала: календарь рисовал «ожидается
+    по расписанию» поверх дней, на которые уже стоят настоящие посты, и
+    дальше врал тем сильнее, чем длиннее очередь -- на месяц вперёд
+    расхождение доходило до недель. Вызывающая сторона (main.py) передаёт
+    сюда время последнего запланированного поста, и прогноз продолжает
+    очередь, а не спорит с ней.
 
     Намеренно не вызывать для канала без автопилота: там нет обязательства
     "выйдет само" вообще, показывать прогноз публикации значило бы обещать
@@ -1449,7 +1462,7 @@ def project_upcoming_slots(channel: Channel, now: datetime, count: int = 30) -> 
     if channel.schedule_kind == "interval":
         base_seconds = max(60, channel.interval_hours * 3600)
         ws, we = channel.publish_window_start, channel.publish_window_end
-        cursor = channel.last_generated_at or now
+        cursor = anchor or channel.last_generated_at or now
         for _ in range(count * 3):  # запас на случаи, которые окно сдвигает вперёд
             if len(slots) >= count:
                 break
@@ -1766,6 +1779,18 @@ def _next_slot_after(channel: Channel, anchor: datetime) -> datetime:
         return anchor + timedelta(hours=24)
 
     base_seconds = max(60, channel.interval_hours * 3600)
+    # Разброс ±N минут («чтобы посты появлялись не по секундомеру»). Настройка
+    # существовала в БД и на экране, но её не читала ни одна функция
+    # планирования -- обещание висело впустую (аудит 02.08). Детерминированный
+    # сдвиг от anchor, а не random: одна и та же очередь при пересчёте не
+    # должна «прыгать», иначе таймер на экране дёргался бы на каждой
+    # перерисовке.
+    jitter = max(0, min(getattr(channel, "interval_jitter_minutes", 0) or 0, 120))
+    if jitter:
+        span = jitter * 2 + 1
+        offset = (int(anchor.timestamp()) + (channel.id or 0)) % span - jitter
+        base_seconds += offset * 60
+        base_seconds = max(60, base_seconds)
     slot = _clamp_to_publish_window(channel, anchor + timedelta(seconds=base_seconds))
     return slot
 

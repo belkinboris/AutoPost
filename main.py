@@ -692,6 +692,7 @@ def _channel_dict(s, ch: Channel) -> dict:
     # СЛЕДУЮЩЕГО канала в списке, та же сессия s) тоже упадёт с
     # "current transaction is aborted", даже если сам по себе он корректен.
     d["next_post_preview"] = None
+    d["next_post_at"] = None
     d["queue_count"] = 0
     d["published_count"] = 0
     d["approval_deadline"] = None
@@ -722,6 +723,13 @@ def _channel_dict(s, ch: Channel) -> dict:
             .order_by(Post.scheduled_at.is_(None).asc(), Post.scheduled_at, Post.created_at)
         ).first()
         d["next_post_preview"] = generator._clean_post(next_post.text)[:220] if next_post else None
+        # Время ближайшего поста в очереди. Нужно карточке на дашборде, чтобы
+        # честно ответить «когда мы напишем следующий пост»: при полной
+        # очереди новый появится не «через интервал от последней генерации»
+        # (такой формулы в коде нет вообще), а когда освободится место --
+        # то есть после этой самой ближайшей публикации (аудит 02.08).
+        if next_post and next_post.scheduled_at:
+            d["next_post_at"] = next_post.scheduled_at.isoformat() + "Z"
         d["queue_count"] = len(s.exec(
             select(Post).where(Post.channel_id == ch.id, Post.status.in_(["pending", "scheduled"]))
         ).all())
@@ -924,6 +932,25 @@ async def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depend
             # Сбрасываем verified только если реально поменялся username
             if new_chat != (ch.tg_chat or ""):
                 ch.verified = False
+        # Окно публикации: принимаем только "ЧЧ:ММ" или пустую строку. Кривое
+        # значение молча не сохраняем -- иначе экран показал бы «Сохранено ✓»
+        # рядом с полем, которое ни на что не влияет (ровно та беда, из-за
+        # которой эта настройка не работала вовсе).
+        for _win_field in ("publish_window_start", "publish_window_end"):
+            if _win_field in payload:
+                raw = (payload[_win_field] or "").strip()
+                if raw:
+                    try:
+                        hh, mm = map(int, raw.split(":"))
+                        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                            raise ValueError
+                        payload[_win_field] = f"{hh:02d}:{mm:02d}"
+                    except Exception:
+                        raise HTTPException(400, "Время окна публикации должно быть в формате ЧЧ:ММ")
+                else:
+                    payload[_win_field] = ""
+        if "interval_jitter_minutes" in payload:
+            payload["interval_jitter_minutes"] = max(0, min(int(payload["interval_jitter_minutes"]), 120))
         if "queue_depth" in payload:
             # Настраиваемая глубина очереди (C14, владелец 01.08): зажимаем
             # в [MIN_QUEUE, потолок тарифа] здесь же, при записи -- иначе
@@ -1323,7 +1350,16 @@ def schedule_preview(channel_id: int, user: User = Depends(current_user)):
         # которые не наступят, был бы обманом, а не прогнозом.
         if not ch.auto_publish or not ch.verified or not ch.enabled:
             return {"slots": []}
-        slots = tasks.project_upcoming_slots(ch, datetime.utcnow(), count=30)
+        # Прогноз продолжает очередь, а не считает параллельно ей: точка
+        # отсчёта -- время последнего уже запланированного поста, ровно как в
+        # tasks._next_queue_slot. Без этого календарь показывал «ожидается по
+        # расписанию» на днях, где уже стоят настоящие посты (аудит 02.08).
+        last = s.exec(
+            select(Post).where(Post.channel_id == ch.id, Post.status == "scheduled")
+            .order_by(Post.scheduled_at.desc())
+        ).first()
+        anchor = last.scheduled_at if last and last.scheduled_at else None
+        slots = tasks.project_upcoming_slots(ch, datetime.utcnow(), count=30, anchor=anchor)
         return {"slots": [s.isoformat() + "Z" for s in slots]}
 
 

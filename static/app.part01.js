@@ -228,7 +228,25 @@ function _localDatetimeInputToUTCISOString(value){
   return new Date(value).toISOString();
 }
 
+// Человеческая длительность: «через 3 дн 4 ч», «через 2 ч 15 мин», «через 5:03».
+// Аудит 02.08: отсчёт подтверждения форматировался жёстко как MM:SS, а после
+// C14 дедлайн равен времени поста в очереди -- то есть часы и дни. На экране
+// это выглядело как «⏱ через 4350:00», и то же число уходило в Telegram
+// («если не подтвердите за 4350 мин»).
+function humanDuration(ms){
+  if(ms <= 0) return "";
+  const totalMin = Math.floor(ms / 60000);
+  const days = Math.floor(totalMin / 1440);
+  const hours = Math.floor((totalMin % 1440) / 60);
+  const mins = totalMin % 60;
+  if(days > 0) return `${days} дн${hours ? " " + hours + " ч" : ""}`;
+  if(hours > 0) return `${hours} ч${mins ? " " + mins + " мин" : ""}`;
+  const secs = Math.floor((ms % 60000) / 1000);
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
 function toast(msg, kind="") {
+
   // Последний рубеж защиты (P0 fix): что бы ни передали в toast — никогда
   // не показываем [object Object] или другой нечитаемый JS-объект.
   if (typeof msg !== "string") {

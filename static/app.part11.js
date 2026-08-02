@@ -230,15 +230,21 @@ function _scheduleApprovalRefresh(pending){
 // готовым постом. Формулировки — с явными подлежащими, без канцелярита.
 function _renderQueueStatus(c, pendingCount, opts){
   const {minQueue, connected, paused} = opts;
-  // «N из M» осмысленно, пока очередь наполняется: M -- сколько постов мы
-  // держим наготове. Но плановая генерация глубину очереди не проверяет
-  // (tick -> generate_for_channel в tasks.py, гейт `pending_count < target`
-  // стоит только в _refill_if_active), поэтому постов легко становится больше
-  // цели -- и счётчик показывал «4 из 3». Когда запас набран, знаменатель
-  // больше ничего не объясняет: показываем просто число.
-  const counter = pendingCount >= minQueue
-    ? `<b>${pendingCount}</b>`
-    : `<b>${pendingCount}</b> из ${minQueue}`;
+  // «N из M»: знаменатель показываем ВСЕГДА, в том числе когда N > M.
+  // Раньше он в этом случае исчезал -- ровно в тот момент, когда нужен
+  // больше всего. Аудит 02.08: человек уменьшает глубину очереди с 6 до 3,
+  // видит «В очереди 6» без единого пояснения и не понимает, почему новые
+  // посты перестали появляться. Уже написанные посты мы не выбрасываем
+  // (человек их не отклонял), очередь рассасывается публикациями -- об этом
+  // говорит overflowLine.
+  //
+  // Переполнение теперь возможно только по воле пользователя: плановое
+  // пополнение глубину проверяет (_refill_queue), кнопка «Написать сейчас»
+  // с выбранным временем -- намеренно нет.
+  const counter = `<b>${pendingCount}</b> из ${minQueue}`;
+  const overflowLine = pendingCount > minQueue
+    ? ` Сейчас постов больше запаса: готовые никуда не денутся, а новые мы начнём писать, когда их останется меньше ${minQueue}.`
+    : "";
   const settingsLink = `onclick="setTab('settings');setTimeout(()=>{const el=document.getElementById('settings_automation_card');if(el) el.scrollIntoView({behavior:'smooth',block:'center'});},100)"`;
 
   if(paused){
@@ -308,7 +314,7 @@ function _renderQueueStatus(c, pendingCount, opts){
     return `<div class="card" style="background:var(--blue-bg);border:none;margin-bottom:14px;padding:14px 16px">
       <div style="font-size:13px;color:var(--blue);font-weight:600">Автопилот включён</div>
       <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
-        Мы сами пишем и публикуем посты — ${_intervalLabel(c.interval_hours||12)}. Подтверждать ничего не нужно. В очереди ${counter}.
+        Мы сами пишем и публикуем посты — ${_intervalLabel(c.interval_hours||12)}. Подтверждать ничего не нужно. В очереди ${counter}.${overflowLine}
       </div>
       <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0;color:var(--blue)" ${settingsLink}>Изменить</button>
     </div>`;
@@ -324,9 +330,15 @@ function _renderQueueStatus(c, pendingCount, opts){
   // Интервал здесь намеренно не называем -- он написан в «Подробнее», и
   // повторять его на виду значило бы вернуть тот самый повтор, который убрали
   // в B6.
+  //
+  // «Запас готов — дальше посты добавляются по расписанию» тоже оказалось
+  // неправдой, только уже после C14 (аудит 02.08): при полной очереди
+  // _refill_queue выходит на первой же проверке `pending_count >= target` и
+  // не пишет ничего, сколько бы времени ни прошло. Место освобождает
+  // публикация -- это и говорим.
   const refillLine = pendingCount < minQueue
     ? `Ещё ${minQueue - pendingCount} мы готовим — обычно это занимает пару минут.`
-    : `Запас готов — дальше посты добавляются по расписанию.`;
+    : `Запас набран — следующий пост мы напишем, когда в очереди освободится место, то есть после ближайшей публикации.${overflowLine}`;
 
   // Механику «кнопка или таймер» показываем только когда постов ещё нет.
   // Как только пост появился, его карточка говорит это про себя сама -- либо
@@ -580,9 +592,17 @@ function _renderQueueDepthRow(c){
   const ceiling = c.queue_ceiling || 3;
   const current = c.queue_depth || c.queue_target || 3;
   const options = [3,4,5,6,7];
+  // Подсказка называла условие, которого в коде нет: потолок поднимает не
+  // тариф «Про», а ЛЮБОЙ платёж со статусом paid (tasks.queue_target_for_user
+  // ищет просто `Payment.status == "paid"`, User.plan там не участвует).
+  // Человек с оплаченным минимальным тарифом читал, что ему нужен «Про», —
+  // хотя очередь у него уже открыта (аудит 02.08).
+  //
+  // Про уменьшение глубины говорим прямо: готовые посты мы не удаляем, и
+  // если их сейчас больше нового значения, очередь сойдётся не сразу.
   const hint = ceiling < 7
-    ? `Сколько готовых постов держим наготове одновременно. На вашем тарифе — до ${ceiling}; больше открывается на «Про» и выше.`
-    : `Сколько готовых постов держим наготове одновременно.`;
+    ? `Сколько готовых постов держим наготове одновременно. Сейчас доступно до ${ceiling}; после любой оплаты — до 7. Если уменьшить, уже написанные посты останутся: очередь сойдётся к новому значению по мере публикаций.`
+    : `Сколько готовых постов держим наготове одновременно. Если уменьшить, уже написанные посты останутся: очередь сойдётся к новому значению по мере публикаций.`;
   return `<div class="toggle-row" style="align-items:flex-start">
     <div class="toggle-info" style="flex:1">
       <b>Глубина очереди</b><small>${hint}</small>
@@ -590,7 +610,7 @@ function _renderQueueDepthRow(c){
         ${options.map(n=>{
           const disabled = n > ceiling;
           const on = n === current && !disabled;
-          return `<button class="${on?"on":""}" ${disabled?`disabled title="Доступно с тарифа, открывающего очередь на ${n}" style="opacity:.4;cursor:not-allowed"`:""} onclick="pickOpt('queue_depth',${n},'seg_queue_depth')">${n}</button>`;
+          return `<button class="${on?"on":""}" ${disabled?`disabled title="Откроется после оплаты любого тарифа" style="opacity:.4;cursor:not-allowed"`:""} onclick="pickOpt('queue_depth',${n},'seg_queue_depth')">${n}</button>`;
         }).join("")}
       </div>
     </div>
@@ -697,7 +717,7 @@ function renderSettings(){
            дёргает тот же /generate, что и «Написать пост сейчас» в очереди:
            пост настоящий, тратит токены и остаётся в очереди. Называем вещи
            одинаково в обоих местах и сразу говорим про расход. -->
-      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Напишем пост прямо сейчас — посмотрите, что получается с текущими настройками. Пост обычный: тратит токены и встаёт в очередь, сам не опубликуется.</p>
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Напишем пост прямо сейчас — посмотрите, что получается с текущими настройками. Пост обычный: тратит токены и встаёт в очередь${c.auto_publish ? ', а когда придёт его время — выйдет в канал сам, как и остальные' : ', публиковать его или нет — решаете вы'}.</p>
       <button class="btn-outline" onclick="testPost()" id="testBtn">▷ Написать пост сейчас</button>
       <div id="test_result" style="margin-top:12px"></div>
     </div>

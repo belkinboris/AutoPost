@@ -72,14 +72,12 @@ function renderPostCard(p, pubMs, channelEnabled){
     // (tasks._requeue_unconfirmed_post), а не опубликуется молча.
     const dl=new Date(p.approval_deadline).getTime();
     const diff=dl-Date.now();
-    const mm=Math.max(0,Math.floor(diff/60000)),ss=Math.max(0,Math.floor((diff%60000)/1000));
-    const label=diff>0?`⏱ через ${mm}:${String(ss).padStart(2,"0")}, если не подтвердите`:"⏱ время почти вышло…";
+    const label=diff>0?`⏱ через ${humanDuration(diff)}, если не подтвердите`:"⏱ время почти вышло…";
     statusPill=`<div class="status-pill status-pill-yellow" data-approval-countdown="${dl}">${label}</div>`;
     subLine=`<div class="status-subline">Не подтвердите вовремя — пост уйдёт в конец очереди</div>`;
   } else if(sched && p.scheduled_at && App._chan?.auto_publish){
     const sd=new Date(p.scheduled_at+"Z");const diff=sd-Date.now();
-    const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000),sec=Math.floor((diff%60000)/1000);
-    const countdown=diff>0?(h>0?`через ${h}ч ${m}м`:`через ${m}:${String(sec).padStart(2,"0")}`):"скоро";
+    const countdown=diff>0?`через ${humanDuration(diff)}`:"скоро";
     const ts=sd.toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
     statusPill=`<div class="status-pill status-pill-blue" id="countdown_${p.id}" data-target-ms="${sd.getTime()}">⏱ ${countdown}</div>`;
     subLine=`<div class="status-subline">Опубликуется ${ts}</div>`;
@@ -257,8 +255,7 @@ function startDashboardCountdowns(){
       if(!targetMs) return;
       const diff=targetMs-Date.now();
       if(diff<=0){el.textContent="⏱ время почти вышло…";return;}
-      const m=Math.floor(diff/60000),sec=Math.floor((diff%60000)/1000);
-      el.textContent=`⏱ через ${m}:${String(sec).padStart(2,"0")}, если не подтвердите`;
+      el.textContent=`⏱ через ${humanDuration(diff)}, если не подтвердите`;
     });
   };
   tick();
