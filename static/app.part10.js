@@ -98,8 +98,11 @@ function renderPostCard(p, pubMs, channelEnabled){
   // каждое действие платформы должно быть понятно пользователю).
   let requeuedLine="";
   if(p.requeued_at && (sched || editable)){
+    // Тот же приглушённый status-pill-red, что и у "Ошибка публикации" выше
+    // по файлу (бледный --red-bg фон, текст --red) -- без сплошной заливки
+    // и без эмодзи-кружка, чтобы не выбивалось ярким пятном из общей палитры.
     const rt=new Date(p.requeued_at+"Z").toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
-    requeuedLine=`<div class="status-subline" style="color:var(--red)">🔴 Не подтвердили вовремя ${rt} — перенесён в конец очереди</div>`;
+    requeuedLine=`<div class="status-pill status-pill-red" style="margin-top:6px">Не подтвердили вовремя ${rt} — перенесён в конец очереди</div>`;
   }
 
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────
