@@ -82,13 +82,18 @@ async function saveChannel(){
   if(chatChanged) payload.tg_chat=newChat;
   const notif={
     notify_published:$("sw_n2")?$("sw_n2").checked:false,
+    notify_approval_pending:$("sw_n4")?$("sw_n4").checked:false,
     notify_low_tokens:$("sw_n3")?$("sw_n3").checked:true,
   };
   try{
     await api("PATCH","/channels/"+App._chan.id,payload);
     await api("PATCH","/me",notif);
     // Обновляем локально без перерендера — чтобы тумблеры не сбросились
-    if(App.user){ App.user.notify_published=notif.notify_published; App.user.notify_low_tokens=notif.notify_low_tokens; }
+    if(App.user){
+      App.user.notify_published=notif.notify_published;
+      App.user.notify_approval_pending=notif.notify_approval_pending;
+      App.user.notify_low_tokens=notif.notify_low_tokens;
+    }
     toast("Сохранено ✓","ok");
   }catch(e){toast(e&&e.message?e.message:"Ошибка запроса","err");}
 }

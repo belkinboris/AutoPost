@@ -54,13 +54,23 @@ TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "")
 MAIN_BOT_USERNAME = os.getenv("MAIN_BOT_USERNAME", "maintrpost_bot")
 # Режим публикации "публикация после подтверждения" (Channel.auto_publish=
-# False): сколько минут висит карточка с кнопками в личке владельца канала,
-# прежде чем пост публикуется автоматически, если не было реакции.
+# False). Решение владельца 01-02.08 (единая модель очереди, C14): таймер
+# подтверждения БОЛЬШЕ НЕ публикует пост по истечении -- он переносит пост в
+# конец очереди (см. tasks._requeue_unconfirmed_post). Молчаливая публикация
+# по таймеру противоречила сквозному принципу "ничего не происходит без
+# контроля пользователя" -- см. правило 4 в этом файле.
+#
+# SOFT_CONTROL_APPROVAL_MINUTES теперь используется только как МИНИМАЛЬНОЕ
+# время на решение для поста, вставшего в пустую очередь (см.
+# tasks._next_queue_slot) -- иначе первый пост в пустой очереди получил бы
+# дедлайн "прямо сейчас". Для непустой очереди реальный срок определяется
+# местом поста в очереди (его собственным scheduled_at).
 SOFT_CONTROL_APPROVAL_MINUTES = int(os.getenv("SOFT_CONTROL_APPROVAL_MINUTES", "30"))
-# Финальный буфер перед самой публикацией (и после дедлайна, и после
-# только что присланной правки текста) -- последний шанс отменить/
-# поправить, вместо мгновенной необратимой публикации в канал.
-SOFT_CONTROL_FINAL_GRACE_SECONDS = int(os.getenv("SOFT_CONTROL_FINAL_GRACE_SECONDS", "60"))
+# За сколько минут до дедлайна показать жёлтое предупреждение "не
+# подтвердите -- пост уйдёт в конец очереди". Отдельный тумблер
+# User.notify_approval_pending решает, слать ли ещё и уведомление в Telegram
+# (карточка обновляется в любом случае, тумблер -- только про лишний пинг).
+SOFT_CONTROL_WARNING_MINUTES = int(os.getenv("SOFT_CONTROL_WARNING_MINUTES", "10"))
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./postbot.db")
 PUBLIC_URL = os.getenv("PUBLIC_URL") or (
     f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN')}"

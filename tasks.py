@@ -4,7 +4,6 @@
 
 import json
 import logging
-import random
 import re
 from datetime import datetime, timedelta
 from typing import Optional
@@ -361,23 +360,30 @@ async def generate_for_channel(channel_id: int, topic: str = "", force_pending: 
     with session() as s:
         channel = s.get(Channel, channel_id)
         user = s.get(User, channel.user_id)
+        # Единая модель очереди (C14, решение владельца 01-02.08): пост
+        # НИКОГДА не публикуется в момент генерации -- ни автопилот, ни
+        # ручная кнопка "Написать пост сейчас". Каждый пост встаёт в очередь
+        # со своим временем публикации (_next_queue_slot). Автопилот
+        # публикует его сам, когда время наступит (due_scheduled_posts);
+        # режим подтверждения -- только после явного "Опубликовать", а если
+        # время наступило без реакции -- переносит пост в конец очереди
+        # (_requeue_unconfirmed_post), а не публикует молча.
+        #
+        # force_pending=True -- отдельный путь только для онбординга: первый
+        # черновик показывается сразу на экране, до того как у канала вообще
+        # есть настроенное расписание, ни очереди, ни подтверждения тут нет.
+        scheduled_at = None if force_pending else _next_queue_slot(s, channel)
         post = Post(
             channel_id=channel_id,
             user_id=channel.user_id,
             text=text,
             tokens_used=tokens,
-            status="pending",
+            status=("pending" if force_pending else "scheduled"),
+            scheduled_at=scheduled_at,
         )
         prev_balance = user.token_balance
         user.token_balance = max(0, user.token_balance - tokens)
         channel.last_generated_at = datetime.utcnow()
-
-        if channel.auto_publish and not force_pending:
-            result = await telegram_api.send_message(channel.tg_chat, text)
-            if result.get("ok"):
-                post.status = "published"
-                post.published_at = datetime.utcnow()
-                post.tg_message_id = result["result"].get("message_id")
 
         s.add(post); s.add(user); s.add(channel)
         s.commit(); s.refresh(post)
@@ -385,53 +391,35 @@ async def generate_for_channel(channel_id: int, topic: str = "", force_pending: 
 
         # Читаем всё необходимое для уведомлений пока сессия открыта
         notify_chat_id = user.tg_chat_id
-        notify_pub = user.notify_published and post.status == "published"
         notify_low = user.notify_low_tokens and prev_balance > LOW_TOKENS_THRESHOLD and user.token_balance <= LOW_TOKENS_THRESHOLD
         chan_title = channel.title
-        # "Публикация после подтверждения": канал не в автопилоте, это
-        # регулярная генерация по расписанию (не ручной запрос из
-        # приложения и не догенерация резерва очереди -- обе всегда
-        # приходят с force_pending=True).
+        # Подтверждение — только в режиме "публикация после подтверждения",
+        # и только для постов, реально вставших в очередь (не для
+        # force_pending=True онбординг-черновика).
         #
-        # КРИТИЧНО (fix): раньше здесь ещё стояло bool(user.tg_chat_id) --
-        # без подключённых личных уведомлений в Telegram запись PostApproval
-        # вообще не заводилась, а значит и таймер на 30 минут (весь смысл
-        # режима "публикация после подтверждения") никогда не запускался.
-        # Пост просто вечно висел в очереди как pending, хотя интерфейс
-        # везде обещает "опубликуется сам через 30 мин, если не
-        # отреагируете" -- обещание было ложным для любого пользователя без
-        # подключённых уведомлений. Теперь таймер заводится всегда;
-        # Telegram-карточка (см. _send_approval_card) -- лишь опциональный
-        # дополнительный канал подтверждения поверх него, подтвердить или
-        # отклонить всегда можно и на сайте, независимо от Telegram.
-        needs_approval = (not channel.auto_publish) and (not force_pending) and post.status == "pending"
+        # КРИТИЧНО (fix, унаследован): раньше здесь ещё стояло
+        # bool(user.tg_chat_id) -- без подключённых личных уведомлений в
+        # Telegram запись PostApproval вообще не заводилась, а значит и
+        # таймер (весь смысл режима "публикация после подтверждения")
+        # никогда не запускался. Таймер заводится всегда; Telegram-карточка
+        # (см. _send_approval_card) -- лишь опциональный дополнительный
+        # канал подтверждения поверх него, подтвердить или отклонить всегда
+        # можно и на сайте, независимо от Telegram.
+        needs_approval = (not channel.auto_publish) and (not force_pending)
         approval_chat_id = user.tg_chat_id
         approval_channel_id = channel_id
+        approval_deadline = scheduled_at
 
-    # Уведомления — вне сессии, с явным chat_id
-    if notify_chat_id:
-        if notify_pub:
-            await _notify_user_by_id(notify_chat_id, f"✅ <b>Пост опубликован</b>\n\nКанал: {chan_title}")
-        if notify_low:
-            await _notify_user_by_id(notify_chat_id, f"⚠️ <b>Токены заканчиваются</b>\n\nОсталось ~1 пост. Пополните баланс в приложении.")
+    if notify_chat_id and notify_low:
+        await _notify_user_by_id(notify_chat_id, f"⚠️ <b>Токены заканчиваются</b>\n\nОсталось ~1 пост. Пополните баланс в приложении.")
 
     if needs_approval:
         try:
-            await _send_approval_card(pid, approval_channel_id, approval_chat_id, chan_title, text)
+            await _send_approval_card(pid, approval_channel_id, approval_chat_id, chan_title, text, approval_deadline)
         except Exception as e:
             logger.warning(f"approval card для поста {pid}: {e}")
 
-    # Если пост сразу опубликован (автопилот) — догенерируем очередь
-    if pid:
-        with session() as s:
-            p = s.get(Post, pid)
-            if p and p.status == "published":
-                try:
-                    await _ensure_queue(pid)
-                except Exception as e:
-                    logger.warning(f"auto-refill after publish: {e}")
-
-    return {"ok": True, "message": "Черновик создан", "post_id": pid, "tokens_used": tokens, "text": text}
+    return {"ok": True, "message": "Пост поставлен в очередь", "post_id": pid, "tokens_used": tokens, "text": text}
 
 
 async def publish_post(post_id: int) -> dict:
@@ -507,11 +495,12 @@ def cancel_pending_approval(post_id: int):
 def _resume_deadline(current_deadline: datetime) -> datetime:
     """
     При возврате в статус "waiting" (после правки текста или отмены
-    редактирования) гарантирует минимум SOFT_CONTROL_FINAL_GRACE_SECONDS
-    до следующей возможной публикации -- даже если исходный дедлайн уже
-    прошёл, пост не публикуется в ту же секунду, что и правка.
+    редактирования) гарантирует минимум SOFT_CONTROL_WARNING_MINUTES до
+    дедлайна -- даже если исходный дедлайн уже прошёл, пост не переносится
+    в конец очереди в ту же секунду, что и правка (успеть хотя бы увидеть
+    предупреждение, а не попасть под уже истёкший дедлайн немедленно).
     """
-    floor = datetime.utcnow() + timedelta(seconds=config.SOFT_CONTROL_FINAL_GRACE_SECONDS)
+    floor = datetime.utcnow() + timedelta(minutes=config.SOFT_CONTROL_WARNING_MINUTES)
     return max(current_deadline, floor)
 
 
@@ -529,7 +518,15 @@ async def _render_approval_card(chat_id: int, message_id: Optional[int], post_id
     """Собирает и отправляет/обновляет карточку поста в личке. Общая для
     первой отправки (message_id=None -- шлём новое сообщение) и для
     обновлений (после "Отмена" редактирования, после присланного нового
-    текста)."""
+    текста).
+
+    Единая модель очереди (C14, решение владельца 01-02.08): деадлайн
+    подтверждения БОЛЬШЕ НЕ означает "опубликуем сами" -- он означает
+    "перенесём в конец очереди, если не подтвердите". Молчаливая публикация
+    по таймеру противоречила сквозному принципу проекта (см. CLAUDE.md,
+    правило 4): пользователь должен полностью контролировать, что уходит в
+    канал.
+    """
     preview = generator._clean_post(post_text)
     if len(preview) > 500:
         preview = preview[:500].rstrip() + "…"
@@ -537,7 +534,7 @@ async def _render_approval_card(chat_id: int, message_id: Optional[int], post_id
     prefix = "✏️ <b>Текст обновлён.</b>\n\n" if edited else f"📝 <b>Новый пост для канала «{channel_title}»</b>\n\n"
     card_text = (
         f"{prefix}{preview}\n\n"
-        f"⏱ Опубликуется автоматически через {minutes_left} мин, если не подтвердите раньше."
+        f"⏱ Если не подтвердите за {minutes_left} мин, пост уйдёт в конец очереди."
     )
     keyboard = _approval_keyboard(post_id)
     if message_id:
@@ -545,29 +542,25 @@ async def _render_approval_card(chat_id: int, message_id: Optional[int], post_id
     return await telegram_api.send_dm_with_keyboard(chat_id, card_text, keyboard)
 
 
-async def _send_approval_card(post_id: int, channel_id: int, chat_id: Optional[int], channel_title: str, post_text: str):
+async def _send_approval_card(post_id: int, channel_id: int, chat_id: Optional[int],
+                               channel_title: str, post_text: str, deadline: datetime):
     """
-    Заводит дедлайн и запись PostApproval для поста в режиме "публикация
-    после подтверждения" -- но ТОЛЬКО если мы смогли предупредить человека
+    Заводит запись PostApproval для поста в режиме "публикация после
+    подтверждения" -- но ТОЛЬКО если мы смогли предупредить человека
     карточкой в Telegram.
 
-    Почему так. Правило 4 в CLAUDE.md разрешает публикацию по таймеру лишь
-    когда таймер **явно показан**. Раньше запись заводилась всегда, и у
-    пользователя без подключённых уведомлений пост уходил в канал через 30
-    минут, а сам он об этом не узнавал ниоткуда, кроме сайта, куда мог и не
-    заходить. Это ровно то, что FAQ на лендинге отрицает («каждый пост
-    сначала приходит вам в личку»).
+    Почему так. Правило 4 в CLAUDE.md разрешает публикацию (а теперь и
+    перенос в конец очереди по таймеру) лишь когда таймер **явно показан**.
+    Раньше запись заводилась всегда, и у пользователя без подключённых
+    уведомлений пост уходил в канал через 30 минут, а сам он об этом не
+    узнавал ниоткуда, кроме сайта, куда мог и не заходить.
 
     Теперь без доставленной карточки таймер не заводится: пост остаётся в
-    очереди и ждёт решения сколько угодно -- как пост, написанный вручную.
-    Интерфейс это уже показывает правильно, без правок: карточка поста
-    рисует обратный отсчёт при наличии approval_deadline и «сам не
-    опубликуется», когда его нет.
+    очереди на своём месте и ждёт решения сколько угодно.
 
-    Обратная сторона решения: у человека без Telegram очередь не будет
-    публиковаться сама. Это осознанно -- лучше молчащая очередь, чем пост,
-    ушедший к подписчикам без ведома владельца. Кто хочет автоматики без
-    подтверждений, включает автопилот.
+    deadline -- это же самое время, что и Post.scheduled_at (единая модель
+    очереди, C14): дедлайн подтверждения и время в очереди -- одно и то же,
+    отдельного "30 минут после генерации" таймера больше нет.
 
     review_chat_id=0 -- сентинел "нет Telegram-карточки" (0 не может быть
     настоящим chat_id) вместо NULL, чтобы не менять тип существующей
@@ -580,7 +573,6 @@ async def _send_approval_card(post_id: int, channel_id: int, chat_id: Optional[i
         )
         return
 
-    deadline = datetime.utcnow() + timedelta(minutes=config.SOFT_CONTROL_APPROVAL_MINUTES)
     result = await _render_approval_card(chat_id, None, post_id, channel_title, post_text, deadline)
     if not result.get("ok"):
         # Карточка не доставлена (бот заблокирован, сеть, ошибка Telegram).
@@ -600,56 +592,133 @@ async def _send_approval_card(post_id: int, channel_id: int, chat_id: Optional[i
         s.commit()
 
 
-async def _auto_publish_after_timeout(approval_id: int, post_id: int, review_chat_id: int, review_message_id: Optional[int]):
+async def _send_approval_warning(approval_id: int, post_id: int, review_chat_id: int,
+                                  review_message_id: Optional[int]):
+    """
+    За SOFT_CONTROL_WARNING_MINUTES до дедлайна -- жёлтое предупреждение.
+    Карточку в Telegram обновляем всегда (если она есть); отдельный пинг
+    отдельным сообщением -- только если у человека включён тумблер
+    notify_approval_pending (карточка сама по себе не пингует -- edit
+    сообщения в Telegram происходит без уведомления).
+    """
+    with session() as s:
+        approval = s.get(PostApproval, approval_id)
+        if not approval or approval.status != "waiting" or approval.final_warning_sent:
+            return
+        approval.final_warning_sent = True
+        s.add(approval); s.commit()
+
+        post = s.get(Post, post_id)
+        user = s.get(User, post.user_id) if post else None
+        should_ping = bool(user and user.notify_approval_pending and user.tg_chat_id)
+        ping_chat_id = user.tg_chat_id if should_ping else None
+        chan_title = ""
+        if post:
+            channel = s.get(Channel, post.channel_id)
+            chan_title = channel.title if channel else ""
+
+    if review_message_id:
+        try:
+            await telegram_api.edit_message_text(
+                review_chat_id, review_message_id,
+                f"⏳ Осталось {config.SOFT_CONTROL_WARNING_MINUTES} мин — не подтвердите, "
+                f"пост уйдёт в конец очереди.",
+                keyboard=_approval_keyboard(post_id),
+            )
+        except Exception as e:
+            logger.warning(f"approval warning: не удалось обновить карточку поста {post_id}: {e}")
+
+    if ping_chat_id:
+        try:
+            await _notify_user_by_id(
+                ping_chat_id,
+                f"⏳ <b>Пост для канала «{chan_title}» ждёт подтверждения</b>\n\n"
+                f"Осталось {config.SOFT_CONTROL_WARNING_MINUTES} мин — иначе перенесём в конец очереди.",
+            )
+        except Exception as e:
+            logger.warning(f"approval warning: не удалось отправить пинг для поста {post_id}: {e}")
+
+
+async def _requeue_unconfirmed_post(approval_id: int, post_id: int, review_chat_id: int,
+                                     review_message_id: Optional[int]):
     """
     Вызывается из tick(), когда дедлайн подтверждения истёк без реакции.
-    Двухфазно: сначала предупреждение + короткий финальный буфер
-    (SOFT_CONTROL_FINAL_GRACE_SECONDS), и только потом реальная
-    публикация -- мгновенный тик не должен публиковать пост без ни
-    единого шанса передумать в последний момент.
+
+    Решение владельца 01-02.08 (единая модель очереди, C14): пост НЕ
+    публикуется молча по таймеру -- он переносится в конец очереди с новым
+    scheduled_at и новым циклом подтверждения. Число постов в очереди не
+    меняется (новый не генерируется), пост, который был вторым, становится
+    первым. Это заменяет прежнее двухфазное "предупредили -> подождали
+    ещё немного -> опубликовали": предупреждение теперь отдельно и заранее
+    (см. _send_approval_warning, за SOFT_CONTROL_WARNING_MINUTES до
+    дедлайна), а по самому дедлайну решение уже однозначное.
+
+    PostApproval.post_id уникален (одна строка на пост за всю его жизнь) --
+    новый цикл подтверждения ОБНОВЛЯЕТ ту же строку (новый deadline, статус
+    снова "waiting"), а не заводит вторую: второй insert с тем же post_id
+    падал на UNIQUE constraint, и новая карточка тихо не отправлялась
+    (поймано тестом test_unified_queue.py, а не в проде).
     """
     with session() as s:
         approval = s.get(PostApproval, approval_id)
         if not approval or approval.status != "waiting":
             return  # уже обработано (нажали кнопку) между выборкой и этим тиком
 
-        if not approval.final_warning_sent:
-            # Фаза 1: предупреждаем и даём ещё немного времени, не публикуем
-            approval.final_warning_sent = True
-            approval.deadline = datetime.utcnow() + timedelta(seconds=config.SOFT_CONTROL_FINAL_GRACE_SECONDS)
-            s.add(approval); s.commit()
-            if review_message_id:
-                try:
-                    await telegram_api.edit_message_text(
-                        review_chat_id, review_message_id,
-                        f"⏳ Время вышло — публикую примерно через {config.SOFT_CONTROL_FINAL_GRACE_SECONDS} сек. "
-                        f"Ещё можно нажать «Отклонить» или «Редактировать».",
-                        keyboard=_approval_keyboard(post_id),
-                    )
-                except Exception as e:
-                    logger.warning(f"approval timeout: не удалось отправить финальное предупреждение поста {post_id}: {e}")
-            return
-
-        # Фаза 2: буфер тоже прошёл — реальная публикация
-        approval.status = "done"
-        s.add(approval); s.commit()
-
         post = s.get(Post, post_id)
-        if not post or post.status != "pending":
+        if not post or post.status != "scheduled":
+            approval.status = "done"
+            s.add(approval); s.commit()
             return  # решено другим путём (например отклонено в приложении)
 
-    result = await publish_post(post_id)
+        channel = s.get(Channel, post.channel_id)
+        new_slot = _next_queue_slot(s, channel)
+        post.scheduled_at = new_slot
+        post.requeued_at = datetime.utcnow()
+        s.add(post)
+        s.commit()
+
+        chat_id = s.get(User, post.user_id).tg_chat_id if post.user_id else None
+        chan_title = channel.title if channel else ""
+        post_text = post.text
+
     if review_message_id:
-        if result.get("ok"):
-            text = "⏱ Время на подтверждение истекло — опубликовано автоматически."
-        else:
-            text = f"⚠️ Время на подтверждение истекло, но опубликовать не удалось: {result.get('message', 'ошибка')}"
         try:
-            await telegram_api.edit_message_text(review_chat_id, review_message_id, text)
+            await telegram_api.edit_message_text(
+                review_chat_id, review_message_id,
+                "🔴 Время вышло — пост не подтверждён, перенесён в конец очереди.",
+            )
         except Exception as e:
-            logger.warning(f"approval timeout: не удалось обновить карточку поста {post_id}: {e}")
-    if result.get("ok"):
-        await post_publish_followup(post_id)
+            logger.warning(f"requeue поста {post_id}: не удалось обновить старую карточку: {e}")
+
+    # Новый цикл подтверждения -- новое сообщение в Telegram (старое уже
+    # помечено выше как просроченное), но та же строка PostApproval.
+    new_result = None
+    if chat_id:
+        try:
+            new_result = await _render_approval_card(chat_id, None, post_id, chan_title, post_text, new_slot)
+        except Exception as e:
+            logger.warning(f"requeue поста {post_id}: не удалось отправить новую карточку: {e}")
+
+    with session() as s:
+        approval = s.get(PostApproval, approval_id)
+        if not approval:
+            return
+        if chat_id and new_result and new_result.get("ok"):
+            approval.review_chat_id = chat_id
+            approval.review_message_id = new_result["result"].get("message_id")
+            approval.deadline = new_slot
+            approval.status = "waiting"
+            approval.final_warning_sent = False
+        else:
+            # Не удалось предупредить о новом цикле -- по тому же принципу,
+            # что и в _send_approval_card, таймер заводить нельзя: пост ждёт
+            # решения в очереди сколько угодно. Безопасно даже без активной
+            # записи PostApproval -- due_scheduled_posts публикует по тику
+            # только каналы с auto_publish=True, режим подтверждения сам по
+            # себе никогда не публикуется через общий путь.
+            approval.status = "done"
+        s.add(approval)
+        s.commit()
 
 
 async def _handle_approval_callback(cq: dict):
@@ -681,9 +750,9 @@ async def _handle_approval_callback(cq: dict):
             a = s.get(PostApproval, approval.id)
             a.status = "done"; s.add(a); s.commit()
             post = s.get(Post, post_id)
-            still_pending = bool(post and post.status == "pending")
+            still_waiting = bool(post and post.status == "scheduled")
         await telegram_api.answer_callback_query(cq_id, "Публикую…")
-        if not still_pending:
+        if not still_waiting:
             await telegram_api.edit_message_text(chat_id, message_id, "Пост уже решён другим путём.")
             return
         result = await publish_post(post_id)
@@ -702,14 +771,14 @@ async def _handle_approval_callback(cq: dict):
             a.status = "done"; s.add(a)
             post = s.get(Post, post_id)
             channel_id = post.channel_id if post else None
-            if post and post.status == "pending":
+            if post and post.status == "scheduled":
                 post.status = "rejected"
                 s.add(post)
             s.commit()
         await telegram_api.answer_callback_query(cq_id, "Отклонено.")
         await telegram_api.edit_message_text(chat_id, message_id, "🗑 Пост отклонён.")
         if channel_id:
-            await _refill_if_active(channel_id)
+            await _refill_queue(channel_id)
 
     elif action == "apedit":
         if approval.status != "waiting":
@@ -786,14 +855,22 @@ async def post_publish_followup(post_id: int):
     автодогенерация очереди. Выполняются в фоне отдельной задачей, чтобы не
     задерживать HTTP-ответ клиенту (см. publish_post — это была причина
     false timeout в Bug 2).
+
+    Единая модель очереди (C14): новый пост генерируется именно тогда, когда
+    публикуется последний -- не по интервалу с фиксированной точкой отсчёта,
+    а поддержанием queue_target_for_user постоянно (см. _refill_queue).
+    Вызывается отсюда для ЛЮБОЙ публикации -- и по явному нажатию, и
+    автопилотом через due_scheduled_posts (см. tick()).
     """
     notify_chat_id = None
     notify_title = ""
+    channel_id = None
     try:
         with session() as s:
             post = s.get(Post, post_id)
             if not post:
                 return
+            channel_id = post.channel_id
             channel = s.get(Channel, post.channel_id)
             user = s.get(User, post.user_id)
             if user and user.notify_published and user.tg_chat_id:
@@ -808,81 +885,11 @@ async def post_publish_followup(post_id: int):
         except Exception as e:
             logger.warning(f"post-publish followup (notify send) для поста {post_id}: {e}")
 
-    try:
-        await _ensure_queue(post_id)
-    except Exception as e:
-        logger.warning(f"auto-refill failed для поста {post_id}: {e}")
-
-
-def _next_publish_time(channel: Channel, now: datetime) -> datetime:
-    """Вычисляет следующее время генерации с учётом jitter и окна публикации."""
-    base_seconds = channel.interval_hours * 3600
-    jitter = channel.interval_jitter_minutes or 0
-    if jitter > 0:
-        delta = random.randint(-jitter * 60, jitter * 60)
-        base_seconds = max(60, base_seconds + delta)
-
-    next_time = (channel.last_generated_at or now) + timedelta(seconds=base_seconds)
-
-    # Применяем окно публикации
-    ws = channel.publish_window_start
-    we = channel.publish_window_end
-    if ws and we:
+    if channel_id:
         try:
-            wsh, wsm = map(int, ws.split(":"))
-            weh, wem = map(int, we.split(":"))
-            window_start = next_time.replace(hour=wsh, minute=wsm, second=0, microsecond=0)
-            window_end = next_time.replace(hour=weh, minute=wem, second=0, microsecond=0)
-
-            if next_time < window_start:
-                next_time = window_start
-            elif next_time > window_end:
-                # Переносим на начало следующего дня
-                next_time = (next_time + timedelta(days=1)).replace(hour=wsh, minute=wsm, second=0)
-        except Exception:
-            pass
-
-    return next_time
-
-
-def _is_due(channel: Channel, now: datetime) -> bool:
-    if channel.schedule_kind == "interval":
-        if channel.last_generated_at is None:
-            # Первая генерация — проверяем окно если задано
-            ws = channel.publish_window_start
-            we = channel.publish_window_end
-            if ws and we:
-                try:
-                    wsh, wsm = map(int, ws.split(":"))
-                    weh, wem = map(int, we.split(":"))
-                    cur_minutes = now.hour * 60 + now.minute
-                    start_minutes = wsh * 60 + wsm
-                    end_minutes = weh * 60 + wem
-                    if not (start_minutes <= cur_minutes <= end_minutes):
-                        return False
-                except Exception:
-                    pass
-            return True
-        # Строго проверяем что прошёл нужный интервал
-        min_seconds = channel.interval_hours * 3600
-        elapsed = (now - channel.last_generated_at).total_seconds()
-        if elapsed < min_seconds * 0.9:  # 10% допуск
-            return False
-        next_time = _next_publish_time(channel, now)
-        return now >= next_time
-
-    if channel.schedule_kind == "daily":
-        try:
-            times = json.loads(channel.daily_times or "[]")
-        except Exception:
-            times = []
-        hhmm = now.strftime("%H:%M")
-        if hhmm in times:
-            last = channel.last_generated_at
-            if last is None:
-                return True
-            return not (last.date() == now.date() and last.strftime("%H:%M") == hhmm)
-    return False
+            await _refill_queue(channel_id)
+        except Exception as e:
+            logger.warning(f"auto-refill failed для поста {post_id}: {e}")
 
 
 def project_upcoming_slots(channel: Channel, now: datetime, count: int = 30) -> list:
@@ -1170,136 +1177,153 @@ def queue_target_for_user(s, user_id: int) -> int:
     return PAID_QUEUE if paid else MIN_QUEUE
 
 
-async def _refill_if_active(channel_id: int):
-    """Догенерирует посты до целевой глубины очереди если канал активен.
+def _next_slot_after(channel: Channel, anchor: datetime) -> datetime:
+    """
+    Следующий слот очереди после anchor -- шаг вперёд по расписанию канала
+    (интервал+окно публикации, либо ближайшее время из daily_times), от
+    ПРОИЗВОЛЬНОЙ точки, а не только от channel.last_generated_at.
 
-    Резерв нужен только режиму «подтверждение вручную» -- чтобы у пользователя
-    всегда было что решить. В автопилоте резерв не используется вовсе:
-    плановая генерация публикует свой пост напрямую (см. generate_for_channel,
-    channel.auto_publish and not force_pending), минуя очередь. Без этой
-    проверки резерв всё равно копился до MIN_QUEUE=3 при каждом тике и после
-    каждой автопубликации (см. _ensure_queue) -- реальные токены на посты,
-    которые не публикует ни автопилот (у него свой пост), ни пользователь
-    (режима подтверждения для них нет): они просто зависали в очереди
-    «Ждёт вашего решения» навсегда. Так и нашли -- три таких поста с одной
-    минутой создания в проде у канала с включённым автопилотом.
+    Нужна отдельно от project_upcoming_slots (та считает прогноз для
+    календаря именно от last_generated_at, см. C12) -- здесь anchor обычно
+    это scheduled_at последнего поста, УЖЕ стоящего в очереди, который к
+    моменту вызова может быть сильно позже last_generated_at.
+    """
+    if channel.schedule_kind == "daily":
+        try:
+            times = sorted(json.loads(channel.daily_times or "[]"))
+        except Exception:
+            times = []
+        if not times:
+            return anchor + timedelta(hours=24)
+        cursor = anchor
+        for _ in range(400):
+            for hhmm in times:
+                try:
+                    hh, mm = map(int, hhmm.split(":"))
+                except Exception:
+                    continue
+                candidate = cursor.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if candidate > anchor:
+                    return candidate
+            cursor = cursor + timedelta(days=1)
+        return anchor + timedelta(hours=24)
+
+    base_seconds = max(60, channel.interval_hours * 3600)
+    slot = anchor + timedelta(seconds=base_seconds)
+    ws, we = channel.publish_window_start, channel.publish_window_end
+    if ws and we:
+        try:
+            wsh, wsm = map(int, ws.split(":"))
+            weh, wem = map(int, we.split(":"))
+            window_start = slot.replace(hour=wsh, minute=wsm, second=0, microsecond=0)
+            window_end = slot.replace(hour=weh, minute=wem, second=0, microsecond=0)
+            if slot < window_start:
+                slot = window_start
+            elif slot > window_end:
+                slot = (slot + timedelta(days=1)).replace(hour=wsh, minute=wsm, second=0)
+        except Exception:
+            pass
+    return slot
+
+
+def _next_queue_slot(s, channel: Channel) -> datetime:
+    """
+    Время публикации для НОВОГО поста в очереди -- сразу после уже стоящих
+    в очереди (единая модель очереди, C14, решение владельца 01-02.08).
+
+    Пустая очередь (или последний слот уже в прошлом) -- новый слот от
+    "сейчас". Для режима подтверждения при этом гарантируем минимум
+    SOFT_CONTROL_APPROVAL_MINUTES на решение -- иначе первый пост в пустой
+    очереди получил бы дедлайн "прямо сейчас". Автопилоту это не нужно --
+    решения он ни от кого не ждёт.
+    """
+    now = datetime.utcnow()
+    last = s.exec(
+        select(Post).where(Post.channel_id == channel.id, Post.status == "scheduled")
+        .order_by(Post.scheduled_at.desc())
+    ).first()
+    if last and last.scheduled_at and last.scheduled_at > now:
+        return _next_slot_after(channel, last.scheduled_at)
+    if channel.auto_publish:
+        return now
+    return now + timedelta(minutes=config.SOFT_CONTROL_APPROVAL_MINUTES)
+
+
+async def _refill_queue(channel_id: int):
+    """
+    Держит очередь канала заполненной до целевой глубины -- одинаково для
+    обоих режимов публикации (единая модель очереди, C14, решение владельца
+    01-02.08).
+
+    Раньше автопилот и режим подтверждения жили по разным правилам:
+    автопилот генерировал и публиковал один пост по истечении интервала,
+    подтверждение -- держало резерв на глубину queue_target_for_user, но
+    только НЕ для автопилота (см. C10 в PRODUCT_ROADMAP.md: раньше резерв
+    рос и для автопилота тоже, а публиковать эти посты было некому -- они
+    зависали в очереди навсегда).
+
+    Теперь у ОБОИХ режимов посты всегда получают scheduled_at и публикуются
+    через один и тот же путь (due_scheduled_posts/tick, см. generate_for_channel)
+    -- разница только в том, нужно ли подтверждение прежде чем время
+    наступит. Пополнение очереди больше не публикует ничего преждевременно
+    (просто добавляет будущий слот), поэтому C10 здесь повториться не может:
+    любой лишний пост просто получит более позднее время публикации, а не
+    зависнет без способа когда-либо быть опубликованным.
     """
     with session() as s:
         channel = s.get(Channel, channel_id)
-        if not channel or not channel.enabled or channel.auto_publish:
-            return
-        from sqlmodel import select as sel
-        pending_count = len(s.exec(
-            sel(Post).where(
-                Post.channel_id == channel_id,
-                Post.status.in_(["pending", "scheduled"])
-            )
-        ).all())
-        target = queue_target_for_user(s, channel.user_id)
-
-    if pending_count < target:
-        for _ in range(min(target - pending_count, MAX_GEN_PER_TICK)):
-            try:
-                await generate_for_channel(channel_id, force_pending=True)
-            except Exception as e:
-                logger.warning(f"auto-refill gen: {e}")
-                break
-
-
-async def _ensure_queue(published_post_id: int):
-    """После публикации проверяет очередь и догенерирует если меньше MIN_QUEUE."""
-    with session() as s:
-        post = s.get(Post, published_post_id)
-        if not post:
-            return
-        channel_id = post.channel_id
-    await _refill_if_active(channel_id)
-
-
-async def _generate_if_due(channel_id: int):
-    """Плановая генерация по расписанию (`tick`) -- но только если очередь
-    ещё не набрала целевую глубину.
-
-    Владелец 28.07 явно решил: генерация не должна расти бесконечно, если
-    пользователь не заходит и не разбирает очередь. До этой проверки
-    `_is_due` смотрел только на прошедшее время, а сколько постов уже висит
-    нерешённых -- не проверял вовсе. За неделю без единого решения канал с
-    интервалом раз в сутки получал не 7 постов (обещанная онбордингом
-    «очередь на неделю», см. `queue_target_for_user`), а ровно столько,
-    сколько успело сработать тиков расписания -- без потолка.
-
-    Планку берём ту же, что и у резерва (`queue_target_for_user`): 3 поста
-    бесплатному пользователю, 7 -- оплатившему. Так канал с автопилотом,
-    у которого Telegram вдруг перестал принимать сообщения (пост остаётся
-    `pending`, см. generate_for_channel), тоже не будет жечь токены на
-    посты, которые некому даже подтвердить -- проверка на pending_count
-    работает одинаково для обоих режимов, отдельного условия на
-    auto_publish не нужно.
-    """
-    with session() as s:
-        channel = s.get(Channel, channel_id)
-        if not channel:
+        if not channel or not channel.enabled:
             return
         pending_count = len(s.exec(
             select(Post).where(
                 Post.channel_id == channel_id,
-                Post.status.in_(["pending", "scheduled"])
+                Post.status.in_(["pending", "scheduled"]),
             )
         ).all())
         target = queue_target_for_user(s, channel.user_id)
 
     if pending_count >= target:
-        logger.info(
-            f"канал {channel_id}: очередь уже полна ({pending_count}/{target}) -- "
-            f"плановую генерацию пропускаю"
-        )
         return
 
-    await generate_for_channel(channel_id)
+    for _ in range(min(target - pending_count, MAX_GEN_PER_TICK)):
+        try:
+            result = await generate_for_channel(channel_id)
+            if not result.get("ok"):
+                break  # баланс кончился или другая ошибка -- не долбим тик впустую
+        except Exception as e:
+            logger.warning(f"пополнение очереди канала {channel_id}: {e}")
+            break
 
 
 async def resume_starved_channels(user_id: int):
     """
     После пополнения баланса (обычная оплата, апгрейд тарифа, ручное
-    начисление) пробуем сразу сдвинуть каналы, которые УЖЕ просрочили своё
-    расписание -- не дожидаясь ближайшего планового тика.
+    начисление) пробуем сразу дополнить очередь, не дожидаясь ближайшего
+    планового тика.
 
     Найдено владельцем 31.07: пополнил баланс, проверил канал -- в очереди
-    всё ещё 0, хотя по расписанию пост давно должен был выйти. Генерация
-    молчаливо блокируется нулевым балансом (см. generate_for_channel), и до
-    этой правки ждать возобновления приходилось до ближайшего тика
-    планировщика -- а если тик по какой-то причине не подхватил канал вовремя,
-    то и дольше. Платёж -- достаточно весомое событие, чтобы не ждать.
+    всё ещё 0. Генерация молчаливо блокируется нулевым балансом (см.
+    generate_for_channel), и до этой правки ждать возобновления приходилось
+    до ближайшего тика планировщика.
 
-    Намеренно НЕ трогаем автопилот-каналы, которые ещё НЕ просрочили
-    расписание (`_is_due` не пройдена): пополнить баланс заранее, до того как
-    закончился текущий период, не должно вызвать внеочередной пост раньше
-    обещанного интервала -- это было бы хуже, чем просто подождать.
-    Резерв для режима подтверждения (`_refill_if_active`) трогаем всегда,
-    без проверки `_is_due` -- он и так вызывается на каждом тике безусловно
-    для всех каналов, здесь просто убираем ожидание тика.
+    В единой модели очереди (C14) пополнение больше не может создать
+    внеочередную публикацию: новый пост просто получает следующий свободный
+    слот расписания (см. _next_queue_slot), а не публикуется сam -- поэтому,
+    в отличие от прежней версии, здесь не нужно различать автопилот и режим
+    подтверждения: _refill_queue безопасен для обоих всегда.
     """
-    now = datetime.utcnow()
     with session() as s:
-        channels = s.exec(select(Channel).where(
+        channel_ids = [c.id for c in s.exec(select(Channel).where(
             Channel.user_id == user_id,
             Channel.enabled == True,   # noqa
             Channel.verified == True,  # noqa
-        )).all()
-        due_auto_ids = [c.id for c in channels if c.auto_publish and _is_due(c, now)]
-        manual_ids = [c.id for c in channels if not c.auto_publish]
+        )).all()]
 
-    for cid in due_auto_ids:
+    for cid in channel_ids:
         try:
-            await _generate_if_due(cid)
+            await _refill_queue(cid)
         except Exception as e:
             logger.warning(f"resume_starved_channels: канал {cid}: {e}")
-
-    for cid in manual_ids:
-        try:
-            await _refill_if_active(cid)
-        except Exception as e:
-            logger.warning(f"resume_starved_channels: резерв канала {cid}: {e}")
 
 
 async def charge_due_subscriptions():
@@ -1542,47 +1566,59 @@ async def tick():
     except Exception as e:
         logger.warning(f"bot polling: {e}")
 
+    # Единая модель очереди (C14): держим целевую глубину очереди для ВСЕХ
+    # верифицированных каналов одинаково, независимо от режима публикации --
+    # разница между автопилотом и подтверждением не в том, генерируем ли мы
+    # посты заранее, а в том, нужно ли подтверждение перед их публикацией.
     with session() as s:
-        channels = s.exec(select(Channel).where(Channel.enabled == True)).all()  # noqa
-        due_ids = [c.id for c in channels if c.verified and _is_due(c, now)]
-
-    for cid in due_ids:
-        try:
-            await _generate_if_due(cid)
-        except Exception as e:
-            logger.error(f"tick: канал {cid}: {e}")
-
-    # Держим минимум 3 поста в очереди для ВСЕХ верифицированных каналов
-    with session() as s:
-        all_verified = s.exec(select(Channel).where(
+        all_verified_ids = [c.id for c in s.exec(select(Channel).where(
             Channel.enabled == True,   # noqa
             Channel.verified == True,  # noqa
-        )).all()
-        all_verified_ids = [c.id for c in all_verified]
+        )).all()]
 
     for cid in all_verified_ids:
         try:
-            await _refill_if_active(cid)
+            await _refill_queue(cid)
         except Exception as e:
             logger.warning(f"queue-refill канал {cid}: {e}")
 
+    # Публикация: автопилот и явно запланированные ("Запланировать") посты.
+    # Посты режима подтверждения, ещё ожидающие решения, due_scheduled_posts
+    # сама исключает (см. database.py) -- их дедлайн обрабатывается ниже.
     with session() as s:
         from database import due_scheduled_posts
         due_posts = [p.id for p in due_scheduled_posts(s, now)]
 
     for pid in due_posts:
         try:
-            await publish_post(pid)
+            result = await publish_post(pid)
+            if result.get("ok"):
+                await post_publish_followup(pid)
         except Exception as e:
             logger.error(f"tick: пост {pid}: {e}")
 
-    # "Публикация после подтверждения": дедлайн истёк без реакции — публикуем сами
+    # За SOFT_CONTROL_WARNING_MINUTES до дедлайна подтверждения -- предупреждение.
+    with session() as s:
+        from database import approvals_needing_warning
+        warnings = [
+            (a.id, a.post_id, a.review_chat_id, a.review_message_id)
+            for a in approvals_needing_warning(s, now, config.SOFT_CONTROL_WARNING_MINUTES)
+        ]
+
+    for approval_id, post_id, review_chat_id, review_message_id in warnings:
+        try:
+            await _send_approval_warning(approval_id, post_id, review_chat_id, review_message_id)
+        except Exception as e:
+            logger.error(f"tick: approval-warning пост {post_id}: {e}")
+
+    # Дедлайн подтверждения истёк без реакции — перенос в конец очереди
+    # (НЕ публикация, см. _requeue_unconfirmed_post).
     with session() as s:
         from database import due_post_approvals
         due_approvals = [(a.id, a.post_id, a.review_chat_id, a.review_message_id) for a in due_post_approvals(s, now)]
 
     for approval_id, post_id, review_chat_id, review_message_id in due_approvals:
         try:
-            await _auto_publish_after_timeout(approval_id, post_id, review_chat_id, review_message_id)
+            await _requeue_unconfirmed_post(approval_id, post_id, review_chat_id, review_message_id)
         except Exception as e:
             logger.error(f"tick: approval-timeout пост {post_id}: {e}")

@@ -1,12 +1,23 @@
 """
-POST /api/channels/{id}/generate ("Написать пост сейчас") должен вести себя
-так, как обещает режим канала, а не всегда требовать подтверждения.
+POST /api/channels/{id}/generate ("Написать пост сейчас") встаёт в общую
+очередь на тех же правах, что и плановая генерация по расписанию -- независимо
+от режима публикации канала.
 
-Найдено владельцем 31.07: на канале с включённым автопилотом кнопка
-"Написать пост сейчас" создавала пост "Ждёт вашего решения... сам не
-опубликуется" -- ровно то, что автопилот и обещает НЕ требовать. Причина:
-main.py передавал force_pending=True безусловно, независимо от
-channel.auto_publish.
+История вопроса, два неверных захода подряд:
+1. Найдено владельцем 31.07: на канале с автопилотом кнопка создавала пост
+   "Ждёт вашего решения... сам не опубликуется" -- endpoint передавал
+   force_pending=True безусловно, не глядя на channel.auto_publish.
+2. Исправлено 31.07 на force_pending=not auto_publish -- но это заставляло
+   автопилот публиковать пост МГНОВЕННО в момент нажатия кнопки, в обход
+   очереди и обратного отсчёта. Владелец отверг это явно 01-02.08: "написать
+   пост сейчас" не должно значить "опубликовать сейчас" ни в одном режиме.
+
+Единая модель очереди (C14, решение владельца 01-02.08): force_pending
+остался только за онбордингом (`generate_format`, первый черновик без
+очереди). Ручная генерация -- что на автопилоте, что при подтверждении --
+всегда получает scheduled_at и публикуется через общий путь
+(due_scheduled_posts/tick), разница только в том, нужно ли подтверждение
+перед тем как время придёт (см. generate_for_channel, needs_approval).
 """
 
 import pytest
@@ -34,8 +45,8 @@ def fake_generate(monkeypatch):
     return calls
 
 
-async def test_manual_generate_on_autopilot_does_not_force_pending(client, token, fake_generate):
-    """Ключевой случай: автопилот -- решение принимать не нужно вообще."""
+async def test_manual_generate_on_autopilot_joins_queue(client, token, fake_generate):
+    """Автопилот: пост встаёт в очередь со scheduled_at, публикуется сам, когда придёт время -- не мгновенно."""
     cid = await _make_channel(client, token, True, "@manual_gen_auto")
     r = await client.post(f"/api/channels/{cid}/generate", json={},
                           headers={"Authorization": f"Bearer {token}"})
@@ -43,10 +54,10 @@ async def test_manual_generate_on_autopilot_does_not_force_pending(client, token
     assert fake_generate == [{"channel_id": cid, "force_pending": False}]
 
 
-async def test_manual_generate_on_manual_confirm_still_needs_decision(client, token, fake_generate):
-    """Режим подтверждения не задет -- пост по-прежнему ждёт решения."""
+async def test_manual_generate_on_manual_confirm_joins_queue(client, token, fake_generate):
+    """Режим подтверждения: пост тоже встаёт в очередь со scheduled_at -- ждёт кнопки «Опубликовать», а не пропускает очередь."""
     cid = await _make_channel(client, token, False, "@manual_gen_manual")
     r = await client.post(f"/api/channels/{cid}/generate", json={},
                           headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200, r.text
-    assert fake_generate == [{"channel_id": cid, "force_pending": True}]
+    assert fake_generate == [{"channel_id": cid, "force_pending": False}]

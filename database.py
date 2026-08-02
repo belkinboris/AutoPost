@@ -4,7 +4,7 @@ Postgres (Railway) или SQLite (локально).
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 from sqlalchemy import inspect, text
@@ -38,6 +38,12 @@ class User(SQLModel, table=True):
     notify_new_post: bool = False
     notify_published: bool = False
     notify_low_tokens: bool = True
+    # Отдельный тумблер (решение владельца 02.08, C14): пинг за
+    # SOFT_CONTROL_WARNING_MINUTES до переноса неподтверждённого поста в
+    # конец очереди. Не переиспользует notify_new_post/notify_published --
+    # это другое по смыслу событие ("нужно решение", а не "решение принято
+    # за вас").
+    notify_approval_pending: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -106,28 +112,34 @@ class Post(SQLModel, table=True):
     tokens_used: int = 0
     post_format: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Момент, когда пост не подтвердили вовремя и tasks._requeue_unconfirmed_post
+    # перенёс его в конец очереди с новым scheduled_at (C14, решение владельца
+    # 01-02.08). Нужна отдельная колонка, а не просто новый approval-цикл --
+    # фронт должен показать красную плашку "не подтвердили вовремя", а не
+    # молча выдать пост за обычный новый в очереди.
+    requeued_at: Optional[datetime] = None
 
 
 class PostApproval(SQLModel, table=True):
     """
     Состояние поста в режиме "публикация после подтверждения"
-    (Channel.auto_publish=False, пост сгенерирован по расписанию, а не
-    вручную). Пока для поста есть строка здесь со статусом "waiting" и
-    deadline в будущем -- в личке владельца канала висит карточка с
-    кнопками "Опубликовать сейчас" / "Отклонить" / "Редактировать".
-    tick() публикует пост автоматически, как только deadline проходит
-    (см. tasks.py).
+    (Channel.auto_publish=False). Пока для поста есть строка здесь со
+    статусом "waiting" и deadline в будущем -- в личке владельца канала
+    висит карточка с кнопками "Опубликовать сейчас" / "Отклонить" /
+    "Редактировать". deadline -- это же самое время, что и Post.scheduled_at
+    (единая модель очереди, C14, решение владельца 01-02.08): пост либо
+    подтверждают до этого момента, либо он переносится в конец очереди
+    (tasks._requeue_unconfirmed_post), а НЕ публикуется молча по таймеру.
 
     status: waiting (таймер идёт) | awaiting_edit (ждём новый текст
-    ответным сообщением) | done (решено -- опубликован/отклонён/устарел).
+    ответным сообщением) | done (решено -- опубликован/отклонён/устарел/
+    перенесён в конец очереди новой строкой).
 
-    final_warning_sent: когда deadline проходит, tick() не публикует пост
-    в ту же секунду -- сначала присылает предупреждение ("публикую через
-    минуту") и сдвигает deadline на SOFT_CONTROL_FINAL_GRACE_SECONDS
-    вперёд, выставляя этот флаг. Реальная публикация происходит только
-    когда deadline снова проходит И флаг уже True -- даёт человеку
-    последний шанс успеть нажать "Отклонить"/"Редактировать", вместо
-    мгновенной необратимой публикации в канал.
+    final_warning_sent: за SOFT_CONTROL_WARNING_MINUTES до deadline tick()
+    присылает жёлтое предупреждение "не подтвердите -- перенесём в конец
+    очереди" и выставляет этот флаг, чтобы не слать его повторно. Разовое
+    уведомление в Telegram (не только правка карточки) -- по отдельному
+    тумблеру User.notify_approval_pending.
 
     Новая отдельная таблица -- та же безопасная схема, что LandingEvent/
     TrafficAttribution/IdempotencyKey: создаётся через create_all(), без
@@ -420,6 +432,37 @@ def _add_missing_columns():
     except Exception:
         logger.exception("Миграция subscription.price_rub не удалась")
 
+    # User.notify_approval_pending -- новый тумблер уведомлений (C14, единая
+    # модель очереди, 02.08). Таблица user точно уже задеплоена, поэтому
+    # колонка идёт той же идемпотентной миграцией, а не только в модели.
+    try:
+        inspector = inspect(engine)
+        if "user" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("user")}
+            if "notify_approval_pending" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE \"user\" ADD COLUMN notify_approval_pending BOOLEAN NOT NULL DEFAULT FALSE"
+                    ))
+                logger.info("Миграция: добавлена колонка user.notify_approval_pending")
+    except Exception:
+        logger.exception("Миграция user.notify_approval_pending не удалась")
+
+    # Post.requeued_at -- метка "не подтвердили вовремя, перенесён в конец
+    # очереди" (C14, единая модель очереди, 02.08), см. класс Post.
+    try:
+        inspector = inspect(engine)
+        if "post" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("post")}
+            if "requeued_at" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE post ADD COLUMN requeued_at TIMESTAMP"
+                    ))
+                logger.info("Миграция: добавлена колонка post.requeued_at")
+    except Exception:
+        logger.exception("Миграция post.requeued_at не удалась")
+
 
 def init_db():
     SQLModel.metadata.create_all(engine)
@@ -435,12 +478,58 @@ def all_enabled_channels(s: Session) -> list[Channel]:
 
 
 def due_scheduled_posts(s: Session, now: datetime) -> list[Post]:
-    return list(
-        s.exec(select(Post).where(Post.status == "scheduled", Post.scheduled_at <= now)).all()
-    )
+    """
+    Посты со статусом "scheduled", время которых пришло -- публикуются
+    автоматически через tick(). Единая модель очереди (C14, 01-02.08): пост
+    автопилота и пост в режиме подтверждения оба лежат в очереди со
+    scheduled_at одинаково, разница только в том, нужно ли подтверждение
+    прежде чем время наступит.
+
+    КРИТИЧНО: фильтр по Channel.auto_publish, а НЕ только по отсутствию
+    активного PostApproval. Пост в режиме подтверждения, которому не удалось
+    доставить карточку в Telegram (нет tg_chat_id, бот заблокирован, сеть),
+    вообще не получает строку PostApproval (см. tasks._send_approval_card) --
+    если бы исключение держалось только на её наличии, такой пост молча
+    опубликовался бы сам по достижении scheduled_at, ровно то, что правило 4
+    в CLAUDE.md запрещает. Режим подтверждения публикует ТОЛЬКО по явному
+    "Опубликовать" (см. /api/posts/{id}/publish) -- через tick он не
+    публикуется никогда, только переносится в конец очереди
+    (tasks._requeue_unconfirmed_post) или ждёт решения сколько угодно.
+
+    Проверка по PostApproval.status=="waiting" оставлена ДОПОЛНИТЕЛЬНО --
+    защищает от узкого случая переключения канала на автопилот, пока у уже
+    стоящего в очереди поста ещё висит неразрешённое подтверждение.
+    """
+    awaiting_ids = {
+        pid for pid in s.exec(
+            select(PostApproval.post_id).where(PostApproval.status == "waiting")
+        ).all()
+    }
+    posts = s.exec(
+        select(Post).join(Channel, Channel.id == Post.channel_id)
+        .where(Post.status == "scheduled", Post.scheduled_at <= now, Channel.auto_publish == True)  # noqa: E712
+    ).all()
+    return [p for p in posts if p.id not in awaiting_ids]
 
 
 def due_post_approvals(s: Session, now: datetime) -> list[PostApproval]:
+    """Дедлайн подтверждения истёк без реакции -- пост переносится в конец
+    очереди (tasks._requeue_unconfirmed_post), а не публикуется."""
     return list(
         s.exec(select(PostApproval).where(PostApproval.status == "waiting", PostApproval.deadline <= now)).all()
+    )
+
+
+def approvals_needing_warning(s: Session, now: datetime, lead_minutes: int) -> list[PostApproval]:
+    """Подтверждения, чей дедлайн наступит в ближайшие lead_minutes и о
+    которых ещё не предупреждали (final_warning_sent=False) -- жёлтая
+    плашка "не подтвердите за N мин -- уйдёт в конец очереди"."""
+    lead = timedelta(minutes=lead_minutes)
+    return list(
+        s.exec(select(PostApproval).where(
+            PostApproval.status == "waiting",
+            PostApproval.final_warning_sent == False,  # noqa: E712
+            PostApproval.deadline > now,
+            PostApproval.deadline <= now + lead,
+        )).all()
     )

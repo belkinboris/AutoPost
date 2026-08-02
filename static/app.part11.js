@@ -520,7 +520,7 @@ function renderSettings(){
     <div class="card" id="settings_automation_card">
       <div class="card-title">Автоматизация</div>
       <div class="toggle-row">
-        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, по расписанию. Если выключено — пост ждёт вашего решения в очереди и сам не публикуется. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и на решение будет ${App.cfg?.soft_control_minutes||30} мин — не ответите, опубликуем сами.</small></div>
+        <div class="toggle-info"><b>Публиковать без проверки</b><small>Если включено — новые посты выходят в канал сами, когда приходит их время в очереди. Если выключено — пост тоже стоит в очереди со своим временем, но публикуется только после вашего «Опубликовать»; не успеете до этого времени — пост не выйдет, а переедет в конец очереди с новым временем. Подключите уведомления в Телеграм: посты придут туда с кнопками «Опубликовать», «Отклонить», «Редактировать», и за ${App.cfg?.soft_control_warning_minutes||10} мин до срока придёт предупреждение.</small></div>
         <label class="switch"><input type="checkbox" id="sw_auto" ${c.auto_publish?"checked":""}><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
@@ -541,6 +541,10 @@ function renderSettings(){
       <div class="toggle-row">
         <div class="toggle-info"><b>Пост опубликован</b><small>Уведомление после каждой публикации</small></div>
         <label class="switch"><input type="checkbox" id="sw_n2" ${App.user?.notify_published?"checked":""}><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div class="toggle-info"><b>Пост ждёт подтверждения</b><small>Предупредим за ${App.cfg?.soft_control_warning_minutes||10} мин до срока — не успеете, пост уйдёт в конец очереди</small></div>
+        <label class="switch"><input type="checkbox" id="sw_n4" ${App.user?.notify_approval_pending?"checked":""}><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
         <div class="toggle-info"><b>Баланс заканчивается</b><small>Уведомим, когда постов почти не останется</small></div>

@@ -46,6 +46,7 @@ class _RuleIn(_BaseModel):
 class _MePatch(_BaseModel):
     notify_new_post: _Opt[bool] = None
     notify_published: _Opt[bool] = None
+    notify_approval_pending: _Opt[bool] = None
     notify_low_tokens: _Opt[bool] = None
     tg_chat_id: _Opt[int] = None
 
@@ -319,6 +320,7 @@ def get_config():
         "public_url": config.PUBLIC_URL,
         "packages": config.TOKEN_PACKAGES,
         "soft_control_minutes": config.SOFT_CONTROL_APPROVAL_MINUTES,
+        "soft_control_warning_minutes": config.SOFT_CONTROL_WARNING_MINUTES,
         # Целевая глубина очереди -- сколько готовых постов система держит
         # наготове (tasks.MIN_QUEUE). Фронт показывает "в очереди N из M" и
         # пустые слоты-заглушки, поэтому значение обязано приходить с сервера,
@@ -643,6 +645,7 @@ def me(user: User = Depends(current_user)):
         "channel_limit": channel_limit,
         "tg_chat_id": user.tg_chat_id,
         "notify_published": user.notify_published,
+        "notify_approval_pending": user.notify_approval_pending,
         "notify_low_tokens": user.notify_low_tokens,
         "plan_title": plan_title,
     }
@@ -683,9 +686,14 @@ def _channel_dict(s, ch: Channel) -> dict:
         logger.exception(f"_channel_dict: не удалось определить queue_target для канала {ch.id}")
         s.rollback()
     try:
+        # Единая модель очереди (C14): посты встают в очередь со статусом
+        # "scheduled", а не "pending" (pending остаётся только у
+        # онбординг-черновиков, см. generate_for_channel force_pending) --
+        # "следующий" пост это ближайший по scheduled_at, а не по дате
+        # создания.
         next_post = s.exec(
-            select(Post).where(Post.channel_id == ch.id, Post.status == "pending")
-            .order_by(Post.created_at)
+            select(Post).where(Post.channel_id == ch.id, Post.status.in_(["pending", "scheduled"]))
+            .order_by(Post.scheduled_at.is_(None).asc(), Post.scheduled_at, Post.created_at)
         ).first()
         d["next_post_preview"] = generator._clean_post(next_post.text)[:220] if next_post else None
         d["queue_count"] = len(s.exec(
@@ -986,17 +994,22 @@ async def verify_channel(channel_id: int, user: User = Depends(current_user)):
 @app.post("/api/channels/{channel_id}/generate")
 async def generate_channel(channel_id: int, data: PostIn = PostIn(), user: User = Depends(current_user)):
     with session() as s:
-        ch = _own_channel(s, channel_id, user)
-        auto_publish = ch.auto_publish
-    # Найдено владельцем 31.07: force_pending=True стояло безусловно -- нажатие
-    # "Написать пост сейчас" на канале с включённым автопилотом создавало пост
-    # со статусом "Ждёт вашего решения ... сам не опубликуется", хотя весь
-    # смысл автопилота в том, что решение принимать не нужно. Теперь ручная
-    # генерация ведёт себя как канал обещает: автопилот публикует сразу же
-    # (та же ветка, что и у плановой генерации по расписанию), подтверждение
-    # остаётся только там, где оно и должно быть -- в режиме "публикация
-    # после подтверждения".
-    result = await tasks.generate_for_channel(channel_id, topic=data.topic, force_pending=not auto_publish)
+        _own_channel(s, channel_id, user)
+    # Единая модель очереди (C14, решение владельца 01-02.08): "Написать пост
+    # сейчас" встаёт в общую очередь на тех же правах, что и плановая
+    # генерация по расписанию -- получает scheduled_at и (в режиме
+    # подтверждения) обычный таймер согласования. force_pending=False
+    # (по умолчанию) -- этот флаг остался только для онбординга, где первый
+    # черновик показывается сразу на экране, ещё до всякой очереди.
+    #
+    # Найдено владельцем 31.07, исправлено повторно 02.08: раньше здесь
+    # стояло force_pending=True безусловно (пост "Ждёт вашего решения ... сам
+    # не опубликуется" даже на автопилоте), затем force_pending=not
+    # auto_publish (публиковал МГНОВЕННО на автопилоте) -- оба варианта
+    # противоречили принципу "пост никогда не публикуется в момент
+    # генерации", который владелец сформулировал явно после разбора обеих
+    # попыток.
+    result = await tasks.generate_for_channel(channel_id, topic=data.topic)
     if not result["ok"]:
         raise HTTPException(400, result["message"])
     return result
@@ -1137,13 +1150,11 @@ def list_posts(channel_id: int, user: User = Depends(current_user)):
             select(Post).where(Post.channel_id == channel_id).order_by(Post.created_at.desc())
         ).all()
         # Дедлайн автопубликации -- ПОштучно, а не одним флагом на канал.
-        # КРИТИЧНО: таймер заводится только для постов регулярной генерации по
-        # расписанию (tick -> generate_for_channel без force_pending). Посты,
-        # созданные вручную ("Сгенерировать пост"), в онбординге и при
-        # догенерации резерва очереди (_refill_if_active), идут с
-        # force_pending=True и таймера НЕ имеют -- они ждут решения
-        # пользователя сколько угодно долго. Раньше очередь показывала общее
-        # обещание "опубликуется сам через 30 мин" на уровне всего канала, и
+        # КРИТИЧНО: таймер заводится только в режиме подтверждения, и только
+        # если карточка реально доставлена в Telegram (см. _send_approval_card
+        # в tasks.py) -- иначе пост ждёт решения без таймера сколько угодно.
+        # Раньше очередь показывала общее обещание "опубликуется сам через 30
+        # мин" на уровне всего канала, и
         # для большинства постов это была неправда.
         deadlines = {
             a.post_id: a.deadline.isoformat() + "Z"
@@ -1309,7 +1320,7 @@ async def reject_post(post_id: int, user: User = Depends(current_user)):
         p.status = "rejected"
         s.add(p); s.commit()
     tasks.cancel_pending_approval(post_id)
-    await tasks._refill_if_active(channel_id)
+    await tasks._refill_queue(channel_id)
     return {"ok": True}
 
 
@@ -1320,7 +1331,7 @@ async def delete_post(post_id: int, user: User = Depends(current_user)):
         channel_id = p.channel_id
         s.delete(p); s.commit()
     tasks.cancel_pending_approval(post_id)
-    await tasks._refill_if_active(channel_id)
+    await tasks._refill_queue(channel_id)
     return {"ok": True}
 
 
@@ -2248,6 +2259,7 @@ def patch_me(data: _MePatch, user: User = Depends(current_user)):
         u = s.get(User, user.id)
         if data.notify_new_post is not None: u.notify_new_post = data.notify_new_post
         if data.notify_published is not None: u.notify_published = data.notify_published
+        if data.notify_approval_pending is not None: u.notify_approval_pending = data.notify_approval_pending
         if data.notify_low_tokens is not None: u.notify_low_tokens = data.notify_low_tokens
         if data.tg_chat_id is not None: u.tg_chat_id = data.tg_chat_id
         s.add(u); s.commit()
