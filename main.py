@@ -1338,7 +1338,7 @@ async def publish(post_id: int, background_tasks: BackgroundTasks, user: User = 
 
 
 @app.post("/api/posts/{post_id}/schedule")
-def schedule_post(post_id: int, data: ScheduleIn, user: User = Depends(current_user)):
+async def schedule_post(post_id: int, data: ScheduleIn, user: User = Depends(current_user)):
     try:
         when = datetime.fromisoformat(data.scheduled_at.replace("Z", ""))
     except Exception:
@@ -1348,7 +1348,16 @@ def schedule_post(post_id: int, data: ScheduleIn, user: User = Depends(current_u
         p.status = "scheduled"
         p.scheduled_at = when
         s.add(p); s.commit(); s.refresh(p)
-        return p.model_dump()
+        result = p.model_dump()
+    # Решение владельца 02.08: перенос времени сдвигает уже идущее ожидание
+    # решения вместе с постом (та же карточка/дедлайн), а не спрашивает
+    # заново -- пост, который ещё можно перенести, по определению ещё не
+    # подтверждён. См. tasks._sync_approval_to_reschedule.
+    try:
+        await tasks._sync_approval_to_reschedule(post_id, when)
+    except Exception as e:
+        logger.warning(f"перенос поста {post_id}: синхронизация подтверждения не удалась: {e}")
+    return result
 
 
 @app.post("/api/posts/{post_id}/reject")

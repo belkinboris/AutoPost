@@ -767,6 +767,72 @@ async def _requeue_unconfirmed_post(approval_id: int, post_id: int, review_chat_
         s.commit()
 
 
+async def _sync_approval_to_reschedule(post_id: int, new_deadline: datetime):
+    """
+    Вызывается из main.py schedule_post при ручном переносе времени поста
+    ("Запланировать"/"Перенести"). Решение владельца 02.08: пост, который
+    ещё МОЖНО перенести, по определению ещё не подтверждён -- подтверждение
+    в этой модели это и есть публикация, а опубликованный пост в очереди уже
+    не показывается и никуда не переносится. Значит перенос времени должен
+    просто сдвинуть уже идущее ожидание решения вместе с постом, а не
+    начинать его заново и не спрашивать повторно: та же строка PostApproval
+    (или новая, если её не было вовсе), тот же статус "waiting", новый
+    дедлайн = новое время. Предупреждение за SOFT_CONTROL_WARNING_MINUTES
+    сбрасывается, чтобы прийти заново перед НОВЫМ сроком.
+
+    Ничего не делает для автопилота (там подтверждения не бывает) и для
+    постов без способа предупредить (нет tg_chat_id) -- те по тому же
+    принципу, что и при первой генерации, просто ждут решения на сайте без
+    таймера.
+    """
+    with session() as s:
+        post = s.get(Post, post_id)
+        if not post:
+            return
+        channel = s.get(Channel, post.channel_id)
+        if not channel or channel.auto_publish:
+            return
+        approval = s.exec(select(PostApproval).where(PostApproval.post_id == post_id)).first()
+        user = s.get(User, post.user_id)
+        chat_id = user.tg_chat_id if user else None
+        chan_title = channel.title
+        post_text = post.text
+        approval_id = approval.id if approval else None
+        # Карточку переиспользуем только если решение реально ещё висит
+        # ("waiting") -- если approval почему-то "done" при всё ещё
+        # scheduled-посте (нетипичный случай), шлём новую, а не правим
+        # закрытую карточку задним числом.
+        reuse_message_id = approval.review_message_id if (approval and approval.status == "waiting") else None
+
+    if not chat_id:
+        return  # предупредить нечем -- пост ждёт решения без таймера, как и при первой генерации
+
+    try:
+        result = await _render_approval_card(chat_id, reuse_message_id, post_id, chan_title, post_text, new_deadline)
+    except Exception as e:
+        logger.warning(f"перенос поста {post_id}: не удалось обновить/отправить карточку: {e}")
+        return
+    if not result.get("ok"):
+        logger.warning(f"перенос поста {post_id}: карточка не доставлена ({result.get('description')})")
+        return
+
+    with session() as s:
+        if approval_id:
+            approval = s.get(PostApproval, approval_id)
+            if not approval:
+                return
+        else:
+            approval = PostApproval(post_id=post_id, channel_id=post.channel_id,
+                                     review_chat_id=chat_id, deadline=new_deadline)
+        approval.review_chat_id = chat_id
+        approval.review_message_id = result["result"].get("message_id")
+        approval.deadline = new_deadline
+        approval.status = "waiting"
+        approval.final_warning_sent = False
+        s.add(approval)
+        s.commit()
+
+
 async def _handle_approval_callback(cq: dict):
     """Обрабатывает нажатие кнопки на карточке поста в личке."""
     cq_id = cq.get("id")
