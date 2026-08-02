@@ -256,7 +256,12 @@ async def test_due_post_approvals_skips_autopilot_channels():
                             deadline=past, status="waiting"))
         s.commit()
         from database import due_post_approvals
-        due = due_post_approvals(s, datetime.utcnow())
+        # Фильтруем по своему каналу, а не сравниваем весь список с []:
+        # база в тестах общая, и глобальное «пусто» держалось только на том,
+        # что ни один другой тест не оставлял висящего подтверждения. Стоило
+        # появиться test_ui_promises.py с таблицей состояний -- и тест начал
+        # падать, ничего не сломав в коде. Это ловушка, а не проверка.
+        due = [a for a in due_post_approvals(s, datetime.utcnow()) if a.channel_id == cid]
     assert due == [], "на автопилоте переносить по дедлайну нечего -- пост публикуется сам"
 
 
