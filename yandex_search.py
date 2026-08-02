@@ -219,14 +219,39 @@ def has_fresh_results(results: list[dict], days: int = FRESH_DAYS) -> bool:
     return False
 
 
+# Чужие письменности в сниппетах выдачи. Найдено владельцем 02.08: в русский
+# пост попало «В 1989 году在东德 Дрездене» -- модель скопировала иноязычный
+# фрагмент прямо из материала, тем более что промпт прямо требует «используй
+# только эти факты, не выдумывай». Дешевле не давать ей такой материал, чем
+# потом ловить результат на выходе (ловим и там тоже, см. tasks._foreign_script_chars).
+_FOREIGN_SCRIPT_RE = re.compile("[一-鿿぀-ゟ゠-ヿ가-힯؀-ۿ֐-׿฀-๿]")
+
+
+def _has_foreign_script(text: str) -> bool:
+    return bool(_FOREIGN_SCRIPT_RE.search(text or ""))
+
+
 def format_search_context(results: list[dict], limit: int = 3500) -> str:
-    """Сниппеты выдачи -> блок контекста для промпта генерации."""
+    """
+    Сниппеты выдачи -> блок контекста для промпта генерации.
+
+    Результаты с иероглифами/арабицей/хангылем выбрасываем целиком: русский
+    пост не должен собираться из иноязычных кусков. Если после фильтра не
+    осталось ничего -- возвращаем пусто, генерация корректно уходит в режим
+    без поиска (см. generator: пустой материал обрабатывается штатно).
+    """
     if not results:
         return ""
     chunks = []
+    dropped = 0
     for r in results:
+        if _has_foreign_script(f"{r.get('title', '')} {r.get('snippet', '')}"):
+            dropped += 1
+            continue
         date_str = r["modtime"].strftime("%d.%m.%Y") if r["modtime"] else ""
         head = f"• {r['title']}" + (f" ({date_str})" if date_str else "")
         chunks.append(f"{head}\n{r['snippet']}\nИсточник: {r['url']}")
+    if dropped:
+        logger.info(f"format_search_context: отброшено иноязычных результатов: {dropped}")
     text = "\n\n".join(chunks)
     return text[:limit]

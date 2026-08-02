@@ -102,13 +102,17 @@ def quality_scan(
     # Главная проверка. Дубли в канале -- то, за что отписываются и отменяют
     # подписку, и то, что невозможно заметить по коду.
     try:
-        from tasks import _similarity, DUPLICATE_THRESHOLD
+        # Берём _is_duplicate, а не голый порог: скан должен быть НЕ МЕНЕЕ
+        # чувствителен, чем генерация. Раньше он импортировал ту же функцию и
+        # тот же порог, то есть был слеп ровно там же, где и превентивная
+        # проверка -- и пару близнецов с прода 02.08 не увидел (аудит).
+        from tasks import _similarity, _is_duplicate, DUPLICATE_THRESHOLD
         dup_examples, dup_count = [], 0
         for cid, items in by_channel.items():
             for i in range(len(items)):
                 for j in range(i + 1, len(items)):
                     sim = _similarity(items[i].text, items[j].text)
-                    if sim >= DUPLICATE_THRESHOLD:
+                    if _is_duplicate(items[i].text, items[j].text):
                         dup_count += 1
                         if len(dup_examples) < 5:
                             dup_examples.append({
@@ -142,6 +146,25 @@ def quality_scan(
             "Telegram не отображает #, ** и ``` -- читатель увидит эти символы как мусор прямо в посте. "
             "В промпте это запрещено, значит запрет местами не срабатывает.",
             [{"id": p.id, "status": p.status, "head": _head(p.text)} for p in md[:5]],
+        ))
+
+    # ── 2б. Чужая письменность в русском посте ────────────────────────
+    # Найдено владельцем 02.08 на живом канале: «В 1989 году在东德 Дрездене».
+    # Модель скопировала иноязычный фрагмент из поисковой выдачи. Теперь это
+    # отсекается на входе (yandex_search) и на выходе (tasks), но скан нужен
+    # чтобы увидеть, сколько такого уже лежит в очередях.
+    from tasks import _foreign_script_chars
+    foreign = [(p, _foreign_script_chars(p.text)) for p in posts]
+    foreign = [(p, ch) for p, ch in foreign if ch]
+    if foreign:
+        findings.append(_finding(
+            "foreign_script", "high",
+            "В постах символы чужой письменности",
+            len(foreign),
+            "Читатель русского канала видит иероглифы или арабицу прямо в тексте поста. "
+            "Обычно это скопированный фрагмент иноязычного источника из поисковой выдачи.",
+            [{"id": p.id, "status": p.status, "chars": ch[:20], "head": _head(p.text)}
+             for p, ch in foreign[:5]],
         ))
 
     # ── 3. Пост-переспрос вместо поста ────────────────────────────────
