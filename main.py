@@ -902,7 +902,7 @@ def get_channel(channel_id: int, user: User = Depends(current_user)):
 
 
 @app.patch("/api/channels/{channel_id}")
-def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depends(current_user)):
+async def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depends(current_user)):
     with session() as s:
         ch = _own_channel(s, channel_id, user)
         payload = data.model_dump(exclude_none=True)
@@ -932,6 +932,16 @@ def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depends(curr
         s.add(ch)
         s.commit()
         s.refresh(ch)
+    # Решение владельца 02.08: смена режима публикации не должна оставлять
+    # "осиротевшие" посты в поведении прежнего режима -- см.
+    # tasks.sync_posts_to_channel_mode.
+    if "auto_publish" in payload:
+        try:
+            await tasks.sync_posts_to_channel_mode(channel_id)
+        except Exception as e:
+            logger.warning(f"синхронизация режима канала {channel_id}: {e}")
+    with session() as s:
+        ch = s.get(Channel, channel_id)
         return _channel_dict(s, ch)
 
 

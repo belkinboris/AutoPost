@@ -452,12 +452,14 @@ async function toggleChannelEnabled(){
 
 function showPicker(id){
   const p=$("picker_"+id);if(!p) return;p.classList.remove("hidden");
-  const dt=$("dt_"+id);if(dt) dt.value=new Date(Date.now()+3600000).toISOString().slice(0,16);
+  const dt=$("dt_"+id);if(dt) dt.value=_toLocalDatetimeInputValue(new Date(Date.now()+3600000));
 }
 async function doSchedule(id){
   const dt=$("dt_"+id);if(!dt||!dt.value) return toast("Выберите дату","err");
-  try{await api("POST","/posts/"+id+"/schedule",{scheduled_at:dt.value});toast("Запланировано ✓","ok");renderQueue();}
-  catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
+  try{
+    await api("POST","/posts/"+id+"/schedule",{scheduled_at:_localDatetimeInputToUTCISOString(dt.value)});
+    toast("Запланировано ✓","ok");renderQueue();
+  }catch(e){toast(e&&e.message?e.message:"Ошибка","err");}
 }
 function toggleEdit(id){
   const ta=$("pt_"+id),pw=$("ppreview_"+id),sb=$("save_"+id);if(!ta) return;
