@@ -89,6 +89,10 @@ class GenerateFormatIn(BaseModel):
 
 class PostIn(BaseModel):
     topic: str = ""
+    # C14, пункт 4: при "Написать пост сейчас" можно выбрать своё время в
+    # очереди вместо автоматического следующего слота. ISO-строка с фронта
+    # (datetime-local input), как в ScheduleIn.
+    scheduled_at: Optional[str] = None
 
 
 class PostPatch(BaseModel):

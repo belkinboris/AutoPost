@@ -116,7 +116,8 @@ def _find_duplicate(text: str, existing: list) -> tuple:
     return (best, score) if score >= DUPLICATE_THRESHOLD else (None, score)
 
 
-async def generate_for_channel(channel_id: int, topic: str = "", force_pending: bool = False) -> dict:
+async def generate_for_channel(channel_id: int, topic: str = "", force_pending: bool = False,
+                                target_scheduled_at: Optional[datetime] = None) -> dict:
     with session() as s:
         channel = s.get(Channel, channel_id)
         if not channel:
@@ -372,7 +373,20 @@ async def generate_for_channel(channel_id: int, topic: str = "", force_pending: 
         # force_pending=True -- отдельный путь только для онбординга: первый
         # черновик показывается сразу на экране, до того как у канала вообще
         # есть настроенное расписание, ни очереди, ни подтверждения тут нет.
-        scheduled_at = None if force_pending else _next_queue_slot(s, channel)
+        #
+        # target_scheduled_at (C14, пункт 4 из видения владельца 01.08): при
+        # ручном "Написать пост сейчас" можно выбрать конкретное время вместо
+        # автоматического следующего слота -- пост встаёт в очередь на это
+        # место (пересортировка не нужна отдельным кодом, см. C14: позиция в
+        # очереди -- это и есть scheduled_at). Будущность времени проверяет
+        # вызывающая сторона (main.py) -- это граница системы, где есть
+        # пользовательский ввод.
+        if force_pending:
+            scheduled_at = None
+        elif target_scheduled_at is not None:
+            scheduled_at = target_scheduled_at
+        else:
+            scheduled_at = _next_queue_slot(s, channel)
         post = Post(
             channel_id=channel_id,
             user_id=channel.user_id,

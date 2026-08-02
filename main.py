@@ -1025,7 +1025,21 @@ async def generate_channel(channel_id: int, data: PostIn = PostIn(), user: User 
     # противоречили принципу "пост никогда не публикуется в момент
     # генерации", который владелец сформулировал явно после разбора обеих
     # попыток.
-    result = await tasks.generate_for_channel(channel_id, topic=data.topic)
+    #
+    # scheduled_at (C14, пункт 4): пикер даты/времени у "Написать пост
+    # сейчас" -- пост встаёт в очередь на выбранное место вместо стандартного
+    # следующего слота. Проверка "не в прошлом" -- здесь, на границе системы
+    # с пользовательским вводом (generate_for_channel её не делает).
+    target_scheduled_at = None
+    if data.scheduled_at:
+        try:
+            target_scheduled_at = datetime.fromisoformat(data.scheduled_at.replace("Z", ""))
+        except Exception:
+            raise HTTPException(400, "Неверный формат даты")
+        if target_scheduled_at <= datetime.utcnow():
+            raise HTTPException(400, "Выберите время в будущем")
+
+    result = await tasks.generate_for_channel(channel_id, topic=data.topic, target_scheduled_at=target_scheduled_at)
     if not result["ok"]:
         raise HTTPException(400, result["message"])
     return result

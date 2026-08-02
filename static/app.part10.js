@@ -76,13 +76,24 @@ function renderPostCard(p, pubMs, channelEnabled){
     const label=diff>0?`⏱ через ${mm}:${String(ss).padStart(2,"0")}, если не подтвердите`:"⏱ время почти вышло…";
     statusPill=`<div class="status-pill status-pill-yellow" data-approval-countdown="${dl}">${label}</div>`;
     subLine=`<div class="status-subline">Не подтвердите вовремя — пост уйдёт в конец очереди</div>`;
-  } else if(sched && p.scheduled_at){
+  } else if(sched && p.scheduled_at && App._chan?.auto_publish){
     const sd=new Date(p.scheduled_at+"Z");const diff=sd-Date.now();
     const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000),sec=Math.floor((diff%60000)/1000);
     const countdown=diff>0?(h>0?`через ${h}ч ${m}м`:`через ${m}:${String(sec).padStart(2,"0")}`):"скоро";
     const ts=sd.toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
     statusPill=`<div class="status-pill status-pill-blue" id="countdown_${p.id}" data-target-ms="${sd.getTime()}">⏱ ${countdown}</div>`;
     subLine=`<div class="status-subline">Опубликуется ${ts}</div>`;
+  } else if(sched && p.scheduled_at){
+    // Режим подтверждения, пост стоит в очереди, но карточку подтверждения
+    // завести не удалось (не доставилась в Telegram -- см. tasks.py
+    // _send_approval_card) или время выбрано вручную без цикла подтверждения.
+    // due_scheduled_posts фильтрует confirm-mode целиком (database.py) --
+    // такой пост НИКОГДА не опубликуется по тику, только по кнопке. Синий
+    // "опубликуется сам" здесь был бы обещанием, которого система не
+    // выполнит (правило 5).
+    const ts=new Date(p.scheduled_at+"Z").toLocaleString("ru-RU",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+    statusPill=`<div class="status-pill status-pill-yellow">Ждёт вашего решения</div>`;
+    subLine=`<div class="status-subline">Стоит в очереди на ${ts} · сам не опубликуется</div>`;
   } else if(editable){
     // pending без scheduled_at -- только онбординг-черновик (force_pending
     // в generate_for_channel); подтверждения у такого поста не бывает

@@ -371,24 +371,49 @@ function _renderQueueSlots(pendingCount, minQueue, tokensExhausted){
     }
     out += i===0
       ? `<div class="queue-slot">
-           <button class="btn-outline btn-sm" id="queue_gen_btn" onclick="genQueuePost()">+ Написать пост сейчас</button>
-           <div class="queue-slot-hint">Не дожидаясь расписания</div>
+           <div style="display:flex;gap:6px;align-items:center;justify-content:center">
+             <button class="btn-outline btn-sm" id="queue_gen_btn" onclick="genQueuePost()">+ Написать пост сейчас</button>
+             <button class="btn-ghost btn-sm" title="Выбрать время публикации" onclick="toggleQueueGenPicker()">📅</button>
+           </div>
+           <div class="queue-slot-hint">Не дожидаясь расписания — или выберите время кнопкой 📅</div>
+           <div id="queue_gen_picker" class="hidden" style="margin-top:10px;padding:12px;background:var(--surface2);border-radius:10px;border:1px solid var(--border-soft)">
+             <div class="row" style="gap:8px">
+               <input type="datetime-local" id="queue_gen_dt" style="flex:1">
+               <button class="btn btn-sm" onclick="genQueuePost(true)">Написать</button>
+               <button class="btn-ghost btn-sm" onclick="$('queue_gen_picker').classList.add('hidden')">✕</button>
+             </div>
+           </div>
          </div>`
       : `<div class="queue-slot queue-slot-muted"><div class="queue-slot-hint">Место для ещё одного поста</div></div>`;
   }
   return out;
 }
 
+// C14, пункт 4: пикер даты/времени у "Написать пост сейчас" -- пост встаёт
+// в очередь на выбранное место, а не на стандартный следующий слот.
+function toggleQueueGenPicker(){
+  const el=$("queue_gen_picker"); if(!el) return;
+  el.classList.toggle("hidden");
+  const dt=$("queue_gen_dt");
+  if(dt && !dt.value) dt.value=new Date(Date.now()+3600000).toISOString().slice(0,16);
+}
+
 let _genQueueInFlight=false;
-async function genQueuePost(){
+async function genQueuePost(useTime){
   if(!requireAuth()) return;
   if(_genQueueInFlight) return;
+  let payload={};
+  if(useTime){
+    const dt=$("queue_gen_dt");
+    if(!dt||!dt.value) return toast("Выберите дату","err");
+    payload={scheduled_at:dt.value};
+  }
   _genQueueInFlight=true;
   const btn=$("queue_gen_btn");
   if(btn){btn.innerHTML='<span class="spinner"></span> Пишу пост…';btn.disabled=true;}
   try{
-    await api("POST","/channels/"+App._chan.id+"/generate",{});
-    trackGoal("post_generated",{source:"queue_slot",channel_id:App._chan.id});
+    await api("POST","/channels/"+App._chan.id+"/generate",payload);
+    trackGoal("post_generated",{source:"queue_slot",channel_id:App._chan.id,scheduled:!!useTime});
     toast("Пост готов ✓","ok");
     await renderQueue();
   }catch(e){

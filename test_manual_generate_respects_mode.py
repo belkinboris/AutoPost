@@ -37,8 +37,9 @@ async def _make_channel(client, token, auto_publish, tg_chat):
 def fake_generate(monkeypatch):
     calls = []
 
-    async def _fake(channel_id, topic="", force_pending=False):
-        calls.append({"channel_id": channel_id, "force_pending": force_pending})
+    async def _fake(channel_id, topic="", force_pending=False, target_scheduled_at=None):
+        calls.append({"channel_id": channel_id, "force_pending": force_pending,
+                       "target_scheduled_at": target_scheduled_at})
         return {"ok": True, "post_id": None}
 
     monkeypatch.setattr(tasks, "generate_for_channel", _fake)
@@ -51,7 +52,7 @@ async def test_manual_generate_on_autopilot_joins_queue(client, token, fake_gene
     r = await client.post(f"/api/channels/{cid}/generate", json={},
                           headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200, r.text
-    assert fake_generate == [{"channel_id": cid, "force_pending": False}]
+    assert fake_generate == [{"channel_id": cid, "force_pending": False, "target_scheduled_at": None}]
 
 
 async def test_manual_generate_on_manual_confirm_joins_queue(client, token, fake_generate):
@@ -60,4 +61,4 @@ async def test_manual_generate_on_manual_confirm_joins_queue(client, token, fake
     r = await client.post(f"/api/channels/{cid}/generate", json={},
                           headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200, r.text
-    assert fake_generate == [{"channel_id": cid, "force_pending": False}]
+    assert fake_generate == [{"channel_id": cid, "force_pending": False, "target_scheduled_at": None}]
