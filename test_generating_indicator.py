@@ -22,7 +22,7 @@ def _stub_generator(monkeypatch, text="Тестовый пост", fail=False):
     async def _classify(_topic):
         return "valid"
 
-    async def _generate(channel, material, topic, rules_text, recent_titles):
+    async def _generate(channel, material, topic, rules_text, recent_titles, **kw):
         if fail:
             raise generator.GenerationError("боевая ошибка модели")
         return text, 100

@@ -25,7 +25,7 @@ def _stub_generator(monkeypatch, text="Тестовый пост"):
     async def _classify(_topic):
         return "valid"
 
-    async def _generate(channel, material, topic, rules_text, recent_titles):
+    async def _generate(channel, material, topic, rules_text, recent_titles, **kw):
         return text, 100
 
     monkeypatch.setattr(generator, "classify_topic", _classify)

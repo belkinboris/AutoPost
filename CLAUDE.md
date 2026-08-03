@@ -150,7 +150,7 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 158 passed, 11 skipped
+python3 -m pytest -q          # ожидается 324 passed, 11 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__
@@ -200,10 +200,15 @@ pw.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/
 - **`Post.tokens_used` — внутренняя единица учёта, не токен провайдера.**
   По биллингу расхождение примерно шестикратное. Умножать эти числа на цену
   Yandex напрямую **нельзя** — см. `/api/internal/token-economics` со сверкой.
-- **Reasoning-токены DeepSeek не проверены.** В `generator.py` два соседних
-  комментария противоречат друг другу: работает ли `thinking: disabled`.
-  Смотреть строку `[llm-usage]` в логах прода.
-- **Автоплатежи ЮKassa подключены** (владелец подтвердил 02.08) —
-  `SUBSCRIPTION_ENABLED=true` в проде. Код и тесты (`test_subscription_billing.py`)
-  были готовы заранее. Полный цикл автосписания на реальных деньгах этой
-  сессией не проверялся — первое продление стоит отследить вручную.
+- **Reasoning-токены DeepSeek — проверено 03.08, всё в порядке.**
+  `thinking: disabled` работает: в логе прода `reasoning=0` во всех вызовах.
+  Строка `[llm-usage]` в `generator.py` остаётся — по ней видно, если Яндекс
+  поменяет поведение.
+- **Детектор дублей — совещательный, а не запрещающий.** 03.08 он в проде
+  браковал каждый пост подряд на монотематическом канале и жёг ~10 000
+  токенов в минуту по кругу. Замеры (таблица в `tasks.py`) показали, что
+  мешок слов не отличает пересказ от другого эпизода на таком канале.
+  Теперь пост создаётся ВСЕГДА, а сомнение видно пользователю пометкой
+  `Post.duplicate_suspected`. Не возвращайте отказ: это ровно тот путь, где
+  платформа решает молча.
+- **Автоплатежи ЮKassa работают** — владелец проверил полный цикл 03.08.

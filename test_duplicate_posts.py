@@ -248,7 +248,7 @@ def _stub_generator(monkeypatch, texts):
 
     calls = []
 
-    async def _generate(channel, material, topic, rules_text, recent_titles, avoid_text=""):
+    async def _generate(channel, material, topic, rules_text, recent_titles, avoid_text="", **kw):
         calls.append(topic)
         return texts[min(len(calls) - 1, len(texts) - 1)], 100
 
@@ -257,10 +257,22 @@ def _stub_generator(monkeypatch, texts):
     return calls
 
 
-async def test_duplicate_triggers_one_retry_and_then_skips(channel_with_post, monkeypatch):
+async def test_duplicate_triggers_one_retry_and_is_saved_with_a_warning(channel_with_post, monkeypatch):
     """
-    Обе попытки дали текст про то же событие. Пост не должен создаваться
-    вовсе: короткая очередь лучше, чем близнец в канале.
+    Обе попытки дали текст про то же событие -- пост всё равно создаётся,
+    но с пометкой «похоже на дубль».
+
+    ЭТОТ ТЕСТ ПЕРЕВЁРНУТ 03.08, и вот почему. Раньше он закреплял ровно
+    обратное: «пост не должен создаваться вовсе, короткая очередь лучше, чем
+    близнец в канале». В проде это дало отказ КАЖДОМУ посту подряд на канале,
+    где все посты про одного человека: детектор не отличает там пересказ от
+    другого эпизода (см. таблицу замеров в tasks.py). Очередь не пополнялась,
+    тик пробовал заново каждую минуту, около 10 000 токенов в минуту сгорало
+    молча, а на экране мигало «генерируется…».
+
+    Правильная развилка не «создать или нет», а «решить за человека или
+    показать ему». Показываем: пост есть, пометка есть, оба текста рядом --
+    дальше он решает сам (сквозной принцип из CLAUDE.md).
     """
     import database
     from database import Post
@@ -271,11 +283,44 @@ async def test_duplicate_triggers_one_retry_and_then_skips(channel_with_post, mo
 
     result = await tasks.generate_for_channel(channel_with_post, topic="история")
 
-    assert result["ok"] is False, f"близнец не должен создаваться: {result}"
-    assert result.get("duplicate_skipped") is True
+    assert result.get("ok") is True, f"пост обязан создаться даже при подозрении: {result}"
     assert len(calls) == 2, f"должна быть ровно одна перегенерация, вызовов: {len(calls)}"
-    assert _count_posts(database, Post, select, channel_with_post) == before, \
-        "пост-близнец всё-таки попал в очередь"
+    assert _count_posts(database, Post, select, channel_with_post) == before + 1
+
+    with database.session() as s:
+        newest = s.exec(
+            select(Post).where(Post.channel_id == channel_with_post)
+            .order_by(Post.created_at.desc())
+        ).first()
+        assert newest.duplicate_suspected is True, "пометка «похоже на дубль» не выставлена"
+
+
+async def test_generation_never_dead_ends_on_duplicates(channel_with_post, monkeypatch):
+    """Главная защита от прод-инцидента 03.08: сколько бы близнецов подряд ни
+    выдала модель, каждая генерация ЗАВЕРШАЕТСЯ созданием поста.
+
+    Проверяем именно это, а не пометку: цикл в проде крутился потому, что
+    очередь не росла -- пока пост создаётся, тик успокаивается сам, и не важно,
+    насколько точен детектор.
+    """
+    import database
+    from database import Post
+    from sqlmodel import select
+
+    _stub_generator(monkeypatch, [TWIN_B, TWIN_B])
+    before = _count_posts(database, Post, select, channel_with_post)
+
+    for i in range(3):
+        # respect_queue_depth=False -- иначе на третьем круге сработает гейт
+        # глубины очереди и тест перестанет проверять то, ради чего написан.
+        # В самом инциденте очередь была неполной (3 из 4), поэтому гейт не
+        # спасал: тик пробовал снова каждую минуту.
+        result = await tasks.generate_for_channel(channel_with_post, topic="история",
+                                                  respect_queue_depth=False)
+        assert result.get("ok") is True, f"попытка {i + 1} закончилась отказом: {result}"
+
+    assert _count_posts(database, Post, select, channel_with_post) == before + 3, \
+        "очередь не выросла -- значит цикл «сгенерировали и выбросили» вернулся"
 
 
 async def test_retry_with_different_event_is_saved(channel_with_post, monkeypatch):
@@ -348,13 +393,23 @@ def test_search_snippets_with_foreign_script_are_dropped():
     assert "在东德" not in ctx
 
 
-def test_twins_of_different_length_are_caught_by_overlap():
+def test_twins_of_different_length_are_a_known_blind_spot():
     """
-    Один факт, но один пост короткий, другой длинный -- Жаккар такую пару
-    штрафует за разницу ОБЪЁМА, а не содержания (делит на объединение), и
-    даёт 0.071 при пороге 0.10, то есть пропускает. Ловит только перекрытие.
-    Асимметрия по длине реальна: формат story даёт длинные посты, news --
-    короткие, плюс у канала меняется настройка длины.
+    ИЗВЕСТНАЯ ДЫРА, записанная намеренно. Раньше этот тест утверждал, что
+    такая пара ловится перекрытием -- 03.08 выяснилось, что вместе с ней
+    перекрытие ловит и совершенно нормальные короткие посты.
+
+    Замер, из-за которого выбор сделан так, а не иначе:
+      близнецы разной длины      5 общих основ, перекрытие 0.26
+      короткий пост про ДРУГОЕ   5 общих основ, перекрытие 0.42
+    Числа общих основ одинаковые, перекрытие у ЛОЖНОГО срабатывания даже
+    выше. Развести эти два случая мешком слов нельзя -- можно только выбрать,
+    какой ошибкой платить. Платим пропуском: пометка «похоже на дубль»
+    должна что-то значить, иначе она висит на каждой карточке.
+
+    Тест фиксирует пропуск явно, чтобы через месяц никто не решил, что эта
+    пара ловится. Закрывается это не порогом, а другой метрикой
+    (эмбеддинги) -- см. C3 в PRODUCT_ROADMAP.md.
     """
     short = ("Путин в Дрездене спас архив от толпы.\n\n"
              "В 1989 году к зданию советского представительства подошла толпа. "
@@ -366,13 +421,14 @@ def test_twins_of_different_length_are_caught_by_overlap():
             "Слова звучат буднично, без угрозы, и именно это производит впечатление. Толпа расходится, бумаги уцелели. "
             "Много лет спустя этот эпизод будут пересказывать как первое свидетельство характера.")
 
-    assert _similarity(short, long) < DUPLICATE_THRESHOLD, (
-        "предпосылка теста сломалась: Жаккар вдруг стал ловить эту пару, "
-        "тест перестал проверять именно перекрытие"
+    shared = len(tasks._content_words(short) & tasks._content_words(long))
+    assert shared < tasks.MIN_SHARED_STEMS_FOR_OVERLAP, (
+        f"общего материала стало больше ({shared} основ) -- предпосылка "
+        f"дыры изменилась, тест надо пересмотреть"
     )
-    assert tasks._is_duplicate(short, long), (
-        f"пара разной длины про одно событие не поймана: "
-        f"Жаккар {_similarity(short, long):.3f}, перекрытие {tasks._overlap(short, long):.3f}"
+    assert not tasks._is_duplicate(short, long), (
+        "пара вдруг поймалась -- проверьте, не ловятся ли вместе с ней "
+        "обычные короткие посты (ради этого дыра и оставлена)"
     )
 
 
@@ -389,3 +445,71 @@ def test_overlap_threshold_keeps_headroom_from_different_events():
         f"{tasks.DUPLICATE_OVERLAP_THRESHOLD} -- начнутся ложные срабатывания"
     )
     assert tasks._overlap(TWIN_A, TWIN_B) > worst_different * 2
+
+
+# ── Фон монотематического канала (прод-инцидент 03.08) ─────────────────────
+
+# Посты про РАЗНЫЕ эпизоды биографии одного человека. Мои тексты, не с прода
+# (постов оттуда у меня нет), но того же характера: один герой, одна эпоха,
+# общая лексика. В логе прода такие пары давали 0.10-0.13 -- ровно уровень
+# прежнего порога 0.10, поэтому детектор браковал каждый пост подряд.
+_SAME_TOPIC_DIFFERENT_EPISODES = [
+    "Первая работа Путина: сторож на стройке. Летом после школы Владимир "
+    "устроился сторожем на стройку в Ленинграде. Отец считал, что сын должен "
+    "знать цену деньгам. Работа была ночная, платили немного, но эти деньги "
+    "он заработал сам.",
+    "Как дзюдоист из Питера покорил сердце одноклассницы. В школьные годы "
+    "Владимир занимался самбо и дзюдо. Тренер вспоминал, что мальчик был "
+    "упорным. Одноклассники говорили, что он никогда не сдавался, даже "
+    "проигрывая.",
+    "Он выходил один против пятерых. И не боялся. Во дворе ленинградского "
+    "дома дрались часто. Владимир был невысоким, но в драку шёл первым. "
+    "Друзья вспоминают, что отступать он не умел совсем.",
+    "Троечник, который стал президентом. В младших классах Владимир учился "
+    "неровно, отец ругал за оценки. Перелом случился в шестом классе, когда "
+    "мальчик всерьёз занялся спортом и подтянул учёбу.",
+]
+
+
+def test_different_episodes_of_one_life_are_not_duplicates():
+    """Прямая проверка того, что сломалось в проде: разные эпизоды одной
+    биографии не должны считаться дублями друг друга. При пороге 0.10 пара
+    «дзюдо»/«драка во дворе» давала ровно 0.100 и помечалась дублем -- и так
+    каждый новый пост канала."""
+    import itertools
+    bad = []
+    for a, b in itertools.combinations(_SAME_TOPIC_DIFFERENT_EPISODES, 2):
+        if tasks._is_duplicate(a, b):
+            bad.append((tasks._similarity(a, b), tasks._overlap(a, b),
+                        a.split(".")[0], b.split(".")[0]))
+    assert not bad, "разные эпизоды одной темы приняты за дубли: " + "; ".join(
+        f"J={j:.3f} O={o:.3f} «{x}» / «{y}»" for j, o, x, y in bad
+    )
+
+
+def test_new_post_on_a_mono_thematic_channel_gets_through():
+    """Тот же фон, но так, как это происходит в жизни: новый пост сверяется
+    СРАЗУ СО ВСЕМИ уже готовыми. Максимум по четырём сравнениям выше, чем по
+    одному, и именно он пробивал порог -- очередь длиннее, шанс ложного
+    срабатывания выше."""
+    fresh = ("Друг детства вспоминает: Владимир всегда защищал младших во "
+             "дворе Ленинграда, а после школы бежал на тренировку по самбо.")
+    dup, score = tasks._find_duplicate(fresh, _SAME_TOPIC_DIFFERENT_EPISODES)
+    assert dup is None, (
+        f"новый пост про другое принят за дубль «{dup.split('.')[0]}» (Жаккар {score:.3f})"
+    )
+
+
+def test_thresholds_stay_between_the_measured_bands():
+    """Страховка на будущее: пороги обязаны лежать МЕЖДУ измеренными полосами
+    (таблица в tasks.py). Тест падает, если кто-то снова опустит порог в фон
+    или поднимет выше настоящих близнецов -- оба раза это уже случалось."""
+    worst_different = max(
+        max(tasks._similarity(a, b), 0) for a, b in
+        [(x, y) for i, x in enumerate(_SAME_TOPIC_DIFFERENT_EPISODES)
+         for y in _SAME_TOPIC_DIFFERENT_EPISODES[i + 1:]]
+    )
+    assert tasks.DUPLICATE_THRESHOLD > worst_different, (
+        f"порог Жаккара {tasks.DUPLICATE_THRESHOLD} не выше фона разных эпизодов {worst_different:.3f}"
+    )
+    assert tasks._is_duplicate(TWIN_A, TWIN_B), "настоящие близнецы перестали ловиться"

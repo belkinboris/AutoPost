@@ -142,6 +142,23 @@ class Post(SQLModel, table=True):
     # "scheduled". Протухает через PUBLISH_CLAIM_STALE_MINUTES -- если процесс
     # умер между захватом и отправкой, пост не должен зависнуть навсегда.
     publishing_since: Optional[datetime] = None
+    # Детектор дублей посчитал этот пост похожим на уже готовый (tasks.
+    # _find_duplicate). ФЛАГ, А НЕ ЗАПРЕТ -- и это принципиально.
+    #
+    # Прод 03.08: на канале «Истории из жизни Путина» детектор браковал КАЖДЫЙ
+    # пост подряд с совпадением 0.10-0.13 при пороге 0.10, потому что все
+    # посты канала про одного человека и одну эпоху -- общая лексика даёт
+    # такой фон сама по себе. Пост не создавался вовсе, следующий тик пробовал
+    # заново, и так по кругу: около 10 000 токенов в минуту, очередь не
+    # пополнялась, а на экране мигало «генерируется…» без единого объяснения.
+    #
+    # Замер на текстах того же характера показал, что метрика в этой полосе
+    # не разделяет близнецов и разные эпизоды ВООБЩЕ: разные эпизоды давали
+    # 0.100, а настоящий пересказ одной истории -- 0.086. Порогом это не
+    # чинится. Поэтому решение детектора больше не отменяет пост: мы пишем
+    # его, помечаем и показываем человеку -- он видит оба текста рядом и
+    # решает сам (сквозной принцип: платформа не решает молча).
+    duplicate_suspected: bool = False
 
 
 class PostApproval(SQLModel, table=True):
@@ -531,6 +548,23 @@ def _add_missing_columns():
                 logger.info("Миграция: добавлена колонка post.publishing_since")
     except Exception:
         logger.exception("Миграция post.publishing_since не удалась")
+
+    # Post.duplicate_suspected -- пометка «похоже на уже готовый пост»
+    # (прод-инцидент 03.08), см. класс Post. DEFAULT 0, а не NULL: значение
+    # читается как булево в каждой отрисовке карточки, и NULL у старых строк
+    # пришлось бы обрабатывать отдельно в трёх местах.
+    try:
+        inspector = inspect(engine)
+        if "post" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("post")}
+            if "duplicate_suspected" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE post ADD COLUMN duplicate_suspected BOOLEAN NOT NULL DEFAULT 0"
+                    ))
+                logger.info("Миграция: добавлена колонка post.duplicate_suspected")
+    except Exception:
+        logger.exception("Миграция post.duplicate_suspected не удалась")
 
 
 # ── Атомарные захваты (защита от гонок) ───────────────────────────────────

@@ -2196,6 +2196,22 @@ function renderPostCard(p, pubMs, channelEnabled){
     requeuedLine=`<div class="status-pill status-pill-red" style="margin-top:6px">Не подтвердили вовремя ${rt} — перенесён в конец очереди</div>`;
   }
 
+  // «Похоже на уже готовый пост» -- пометка, а не приговор.
+  //
+  // Прод 03.08: детектор дублей ОТМЕНЯЛ такой пост, и на канале, где все
+  // посты про одного человека, он отменял каждый подряд -- очередь не
+  // росла, а тик жёг токены по кругу и молча. Замер показал, что метрика в
+  // этой полосе вообще не отличает пересказ от другого эпизода, поэтому
+  // теперь пост создаётся всегда, а сомнение видно человеку: он открывает
+  // оба текста и решает сам (сквозной принцип из CLAUDE.md).
+  //
+  // Формулировка честная про неуверенность («похоже», «проверьте») -- писать
+  // «это дубль» значило бы выдать догадку за факт, а она ошибается.
+  let duplicateLine="";
+  if(p.duplicate_suspected && p.status!=="published" && p.status!=="rejected"){
+    duplicateLine=`<div class="status-pill status-pill-yellow" style="margin-top:6px">⚠️ Похоже на уже готовый пост — проверьте и удалите лишний</div>`;
+  }
+
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────
   const channelConnected = App._chan && App._chan.tg_chat && App._chan.verified;
   const publishDisabledAttr = channelConnected ? "" : `disabled title="Сначала подключите Телеграм-канал"`;
@@ -2269,6 +2285,7 @@ function renderPostCard(p, pubMs, channelEnabled){
     ${statusPill}
     ${subLine}
     ${requeuedLine}
+    ${duplicateLine}
     <div id="ppreview_${p.id}" style="position:relative">
       <div id="pb_${p.id}" class="post-body post-preview-short" style="margin-top:8px">${renderTg(p.text)}</div>
       <button id="pexp_${p.id}" class="expand-btn" onclick="toggleExpand(${p.id})">Читать полностью ↓</button>

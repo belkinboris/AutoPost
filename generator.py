@@ -336,15 +336,16 @@ async def _call_yandex(system, messages, max_tokens=700):
                     usage = data.get("usage") or {}
                     tokens = int(usage.get("total_tokens") or usage.get("output_tokens", 0) or 0)
                     # Диагностика себестоимости: без этого нельзя ответить на
-                    # вопрос "сколько реально стоит пост". Отдельно логируем
-                    # reasoning-токены -- у DeepSeek "режим размышлений" включён
-                    # по умолчанию, и выше мы пытаемся его отключить
-                    # (thinking: disabled). Работает ли это отключение на
-                    # стороне Яндекса, видно только по этой цифре: если
-                    # reasoning_tokens стабильно 0 -- отключение сработало,
-                    # если нет -- мы платим за невидимые токены на каждой
-                    # генерации, и max_output_tokens с запасом +8000 их
-                    # оплачивает.
+                    # вопрос "сколько реально стоит пост".
+                    #
+                    # ВОПРОС ЗАКРЫТ 03.08 (A2 в PRODUCT_ROADMAP.md). У DeepSeek
+                    # "режим размышлений" включён по умолчанию, и выше мы его
+                    # отключаем (thinking: disabled) -- работает ли отключение
+                    # на стороне Яндекса, было видно только по этой цифре.
+                    # Владелец прислал лог прода: во ВСЕХ 21 вызове подряд
+                    # reasoning=0. Отключение работает, за невидимые токены мы
+                    # не платим. Строку оставляем: это единственный способ
+                    # заметить, если Яндекс поменяет поведение молча.
                     _out_details = usage.get("output_tokens_details") or {}
                     _reasoning = int(_out_details.get("reasoning_tokens", 0) or 0)
                     logger.info(
@@ -475,13 +476,21 @@ async def _call_claude(system, user, use_web_search, max_tokens=700):
 
 async def generate_post(channel: Channel, source_material: str = "", topic: str = "",
                         custom_rules: str = "", recent_titles: str = "",
-                        avoid_text: str = "") -> tuple[str, int]:
+                        avoid_text: str = "", search_page: int = 0) -> tuple[str, int]:
     """
     avoid_text -- дополнительное указание «про это не писать» (повтор
     события, чужой алфавит). ОТДЕЛЬНЫЙ аргумент, а не часть topic:
     раньше запрет клали в topic, и он уходил в поисковый запрос и в
     «Напиши пост на тему: ...» -- то есть механизм «уведи от повтора»
     возвращал модель ровно к тому же событию (аудит 02.08).
+
+    search_page -- страница выдачи Яндекса. Прод 03.08: запрос собирается из
+    channel.about и потому одинаков при каждой генерации, а страница была
+    прибита к нулю -- модель раз за разом получала те же восемь источников и
+    писала те же три-четыре известные истории под новыми заголовками. Никакой
+    запрет в промпте это не лечит: другого материала у неё просто не было.
+    Вызывающая сторона (tasks) листает страницы по числу уже написанных
+    постов, поэтому у каждого следующего поста материал другой.
     """
     voice = VOICE_MAP.get(getattr(channel, "post_voice", "author"), VOICE_MAP["author"])
     fmt = FORMAT_MAP.get(getattr(channel, "post_format", "story"), FORMAT_MAP["story"])
@@ -612,7 +621,7 @@ async def generate_post(channel: Channel, source_material: str = "", topic: str 
         and (use_search or (topic and channel.use_web_search))
     ):
         try:
-            found = await yandex_search.search_news(effective_topic)
+            found = await yandex_search.search_news(effective_topic, page=search_page)
             if found:
                 source_material = (
                     "СВЕЖАЯ ВЫДАЧА ПОИСКА (Яндекс) по теме -- используй только эти факты, не выдумывай.\n"
@@ -625,7 +634,7 @@ async def generate_post(channel: Channel, source_material: str = "", topic: str 
                     + yandex_search.format_search_context(found)
                 )
                 search_tokens = config.YANDEX_SEARCH_TOKEN_COST
-                logger.info(f"Канал {channel.id}: yandex_search дал {len(found)} результатов для «{effective_topic[:60]}»")
+                logger.info(f"Канал {channel.id}: yandex_search дал {len(found)} результатов для «{effective_topic[:60]}» (страница {search_page})")
             else:
                 logger.info(f"Канал {channel.id}: yandex_search пусто для «{effective_topic[:60]}», генерация без поиска")
         except yandex_search.SearchUnavailable as e:
