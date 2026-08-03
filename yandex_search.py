@@ -46,13 +46,13 @@ def _search_enabled() -> bool:
     )
 
 
-def _build_body(query_text: str, max_results: int) -> dict:
+def _build_body(query_text: str, max_results: int, page: int = 0) -> dict:
     return {
         "query": {
             "searchType": "SEARCH_TYPE_RU",
             "queryText": query_text[:400],
             "familyMode": "FAMILY_MODE_MODERATE",
-            "page": "0",
+            "page": str(max(0, int(page))),
         },
         # Плоская группировка: 1 документ = 1 группа, максимум сниппетов
         "groupSpec": {
@@ -135,7 +135,7 @@ def parse_search_xml(xml_text: str) -> list[dict]:
     return results
 
 
-async def search_web(query_text: str, max_results: int | None = None) -> list[dict]:
+async def search_web(query_text: str, max_results: int | None = None, page: int = 0) -> list[dict]:
     """
     Синхронный (по режиму API) запрос к Яндекс.Поиску.
     Возвращает список результатов (может быть пустым).
@@ -145,7 +145,7 @@ async def search_web(query_text: str, max_results: int | None = None) -> list[di
         raise SearchUnavailable("Яндекс.Поиск не сконфигурирован (YANDEX_SEARCH_ENABLED/ключ/folder)")
 
     max_results = max_results or config.YANDEX_SEARCH_MAX_RESULTS
-    body = _build_body(query_text, max_results)
+    body = _build_body(query_text, max_results, page)
     headers = {"Authorization": f"Api-Key {config.YANDEX_SEARCH_API_KEY}"}
 
     last_error = None
@@ -179,18 +179,27 @@ async def search_web(query_text: str, max_results: int | None = None) -> list[di
     raise SearchUnavailable(f"Яндекс.Поиск недоступен: {last_error}")
 
 
-async def search_news(topic: str, max_results: int | None = None) -> list[dict]:
+async def search_news(topic: str, max_results: int | None = None, page: int = 0) -> list[dict]:
     """
     Поиск свежих новостей по теме канала. Обогащаем запрос словом «новости»
     и сортируем найденное по modtime (свежее выше). Релевантностную
     сортировку самой выдачи не трогаем — SORT_MODE_BY_TIME у Яндекса сильно
     роняет качество, свежесть добираем фильтром на нашей стороне.
+
+    `page` — страница выдачи. Раньше она была прибита к нулю, и это оказалось
+    корнем повторов (прод 03.08): запрос собирается из `channel.about`, то
+    есть при каждой генерации он ОДИН И ТОТ ЖЕ, первая страница выдачи тоже
+    одна и та же, и модель раз за разом получала те же восемь источников.
+    Отсюда одни и те же три-четыре известные истории под новыми заголовками —
+    сколько ни запрещай повторяться в промпте, другого материала у неё просто
+    не было. Вызывающая сторона листает страницы по числу уже написанных
+    постов (generator.generate_post).
     """
     topic = (topic or "").strip()
     if not topic:
         return []
     query = topic if "новост" in topic.lower() else f"{topic} последние новости"
-    results = await search_web(query, max_results)
+    results = await search_web(query, max_results, page=page)
     # Свежие (или бездатные — у Яндекса modtime есть не всегда) выше
     now = datetime.now(timezone.utc)
     fresh_cut = now - timedelta(days=FRESH_DAYS)

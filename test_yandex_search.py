@@ -169,12 +169,12 @@ async def test_generate_post_integration():
             return "YES", 50
         return "<b>Сделка века</b>\n\nКомпания А купила компанию Б за 10 млрд.", 1000
 
-    async def fake_search_ok(topic, max_results=None):
+    async def fake_search_ok(topic, max_results=None, **kw):
         captured["search_topic"] = topic
         return [{"title": "Сделка века", "url": "https://e.com/1",
                  "snippet": "А купила Б за 10 млрд рублей", "modtime": now}]
 
-    async def fake_search_fail(topic, max_results=None):
+    async def fake_search_fail(topic, max_results=None, **kw):
         raise yandex_search.SearchUnavailable("тест: сеть упала")
 
     orig_llm = generator._call_yandex
@@ -223,20 +223,20 @@ async def test_check_news_available():
     try:
         ch = _make_channel()
 
-        async def fresh(topic, max_results=None):
+        async def fresh(topic, max_results=None, **kw):
             return [{"title": "t", "url": "u", "snippet": "s", "modtime": now}]
         yandex_search.search_news = fresh
         has, tokens = await generator.check_news_available(ch)
         check("свежие новости -> True", has is True)
         check("проверка стоит токенов поиска", tokens == config.YANDEX_SEARCH_TOKEN_COST, f"tokens={tokens}")
 
-        async def stale(topic, max_results=None):
+        async def stale(topic, max_results=None, **kw):
             return [{"title": "t", "url": "u", "snippet": "s", "modtime": now - timedelta(days=30)}]
         yandex_search.search_news = stale
         has2, _ = await generator.check_news_available(ch)
         check("только старые -> False (пропуск генерации)", has2 is False)
 
-        async def broken(topic, max_results=None):
+        async def broken(topic, max_results=None, **kw):
             raise yandex_search.SearchUnavailable("тест")
         yandex_search.search_news = broken
         has3, tokens3 = await generator.check_news_available(ch)
@@ -260,3 +260,118 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# ── Страница выдачи: корень повторяющихся тем (прод 03.08) ─────────────────
+
+def test_build_body_paging():
+    """Страница уходит в запрос. Была прибита к «0», и это оказалось корнем
+    повторов: запрос собирается из channel.about, то есть одинаков при каждой
+    генерации -- первая страница выдачи тоже одна и та же, и модель раз за
+    разом получала те же восемь источников."""
+    assert yandex_search._build_body("тема", 8)["query"]["page"] == "0"
+    assert yandex_search._build_body("тема", 8, page=3)["query"]["page"] == "3"
+    # Отрицательная страница -- не ошибка API, а тихо испорченная выдача.
+    assert yandex_search._build_body("тема", 8, page=-2)["query"]["page"] == "0"
+
+
+async def test_generation_asks_for_a_different_page_as_the_queue_grows(monkeypatch):
+    """Сквозная проверка: чем больше постов у канала, тем дальше страница.
+
+    Проверяем именно стык tasks -> generator -> yandex_search. Каждое звено
+    по отдельности «работало» и раньше -- страница просто не доезжала до
+    запроса, потому что её никто не передавал.
+    """
+    import database
+    import generator
+    import tasks
+    from database import Channel, Post, User
+
+    seen_pages = []
+
+    async def _classify(_topic):
+        return "valid"
+
+    async def _generate(channel, material, topic, rules_text, recent_titles,
+                        avoid_text="", search_page=0):
+        seen_pages.append(search_page)
+        # Тексты должны различаться СЛОВАМИ, а не цифрами: _content_words
+        # выбрасывает короткие токены, поэтому «текст 1» и «текст 2» дают
+        # одинаковые основы, детектор видит дубль и добавляет лишний вызов
+        # перегенерации -- список страниц перестаёт быть тем, что мы меряем.
+        bodies = [
+            "Кофейня на углу Рубинштейна закрылась после двадцати лет работы.",
+            "Ботанический сад раздаёт саженцы редких клёнов всем желающим.",
+            "Метро запустило ночные поезда по выходным на фиолетовой ветке.",
+            "Городской архив оцифровал переписку купеческих семей девятнадцатого века.",
+            "Приют для собак ищет волонтёров выгуливать питомцев по утрам.",
+            "Театр кукол показал спектакль на языке жестов для слабослышащих детей.",
+            "Пекарня начала печь хлеб на закваске из местной ржаной муки.",
+            "Велодорожку вдоль набережной продлили до старого моста.",
+        ]
+        return bodies[(len(seen_pages) - 1) % len(bodies)], 100
+
+    monkeypatch.setattr(generator, "classify_topic", _classify)
+    monkeypatch.setattr(generator, "generate_post", _generate)
+
+    with database.session() as s:
+        u = User(email="pagecycle@t.local", password_hash="x", token_balance=100_000)
+        s.add(u); s.commit(); s.refresh(u)
+        ch = Channel(user_id=u.id, title="Канал", about="тема", tg_chat="@pagecycle",
+                     verified=True, enabled=True, use_web_search=True)
+        s.add(ch); s.commit(); s.refresh(ch)
+        cid, uid = ch.id, u.id
+
+    for _ in range(3):
+        r = await tasks.generate_for_channel(cid, respect_queue_depth=False)
+        assert r.get("ok") is True, r
+
+    assert seen_pages == [0, 1, 2], (
+        f"страницы выдачи не менялись с ростом очереди: {seen_pages}"
+    )
+
+    # ВАЖНО: выше подменён сам generate_post, поэтому проверено только звено
+    # tasks -> generator. Второе звено (generator -> yandex_search) проверяет
+    # test_generator_forwards_the_page_to_search: без него мутация «прибить
+    # page=0 внутри generator» не ловилась ничем -- проверено.
+
+    # И цикл не уходит в бесконечность: на дальних страницах выдача мусорная.
+    with database.session() as s:
+        for i in range(tasks.SEARCH_PAGES_CYCLE + 2):
+            s.add(Post(channel_id=cid, user_id=uid, text=f"добивка {i}", status="published"))
+        s.commit()
+    seen_pages.clear()
+    await tasks.generate_for_channel(cid, respect_queue_depth=False)
+    assert 0 <= seen_pages[0] < tasks.SEARCH_PAGES_CYCLE, (
+        f"страница вышла за цикл: {seen_pages[0]}"
+    )
+
+
+async def test_generator_forwards_the_page_to_search(monkeypatch):
+    """Второе звено цепочки: generator обязан донести страницу до поиска.
+
+    Тест выше подменяет generate_post целиком и потому слеп к тому, что
+    происходит ВНУТРИ него. Мутация «page=0 прямо в generator» проходила мимо
+    обоих тестов -- ровно так исходная ошибка и жила: параметр вроде бы есть,
+    а до запроса не доезжает.
+    """
+    import generator
+
+    seen = {}
+
+    async def fake_search(topic, max_results=None, page=0):
+        seen["page"] = page
+        return [{"title": "Что-то", "url": "https://e.com/1",
+                 "snippet": "текст", "modtime": None}]
+
+    async def fake_llm(system, messages, max_tokens=700):
+        if "Тема:" in messages[-1]["content"]:
+            return "YES", 10
+        return "<b>Заголовок</b>\n\nТекст поста про городские новости.", 100
+
+    monkeypatch.setattr(yandex_search, "search_news", fake_search)
+    monkeypatch.setattr(generator, "_call_yandex", fake_llm)
+    monkeypatch.setattr(generator, "FORCE_PROVIDER", "yandex")
+
+    await generator.generate_post(_make_channel(), search_page=4)
+    assert seen.get("page") == 4, f"страница не доехала до поиска: {seen}"
