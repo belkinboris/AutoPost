@@ -1987,9 +1987,23 @@ def _next_queue_slot(s, channel: Channel) -> datetime:
     ни одного поста со статусом "scheduled" вообще нет.
     """
     now = datetime.utcnow()
+    # `scheduled_at IS NOT NULL` в условии -- не украшение (найдено прогоном
+    # на настоящем Postgres 03.08). Postgres в `ORDER BY ... DESC` ставит NULL
+    # ПЕРВЫМИ, SQLite -- последними. Пост со статусом "scheduled", но ещё без
+    # времени существует ровно одно мгновение: в sync_posts_to_channel_mode
+    # между `p.status = "scheduled"` и присвоением scheduled_at. Autoflush
+    # успевает записать это промежуточное состояние перед нашим SELECT -- и
+    # на Postgres `.first()` возвращал сам этот пост с NULL. Условие
+    # `if last and last.scheduled_at` тогда ложно, очередь считалась пустой,
+    # и КАЖДЫЙ черновик вставал на «сейчас» вместо своего слота: при
+    # включении автопилота с несколькими онбординг-черновиками они уходили
+    # к подписчикам пачкой. На SQLite тест этого не видел -- сортировка
+    # прятала баг.
     last = s.exec(
-        select(Post).where(Post.channel_id == channel.id, Post.status == "scheduled")
-        .order_by(Post.scheduled_at.desc())
+        select(Post).where(
+            Post.channel_id == channel.id, Post.status == "scheduled",
+            Post.scheduled_at.is_not(None),
+        ).order_by(Post.scheduled_at.desc())
     ).first()
     if last and last.scheduled_at:
         return _next_slot_after(channel, last.scheduled_at)
