@@ -679,6 +679,13 @@ def _channel_dict(s, ch: Channel) -> dict:
         ch.generating_since and (datetime.utcnow() - ch.generating_since) < timedelta(minutes=3)
     )
 
+    # Плановая генерация остановлена после нескольких неудач подряд, и почему
+    # именно (прод-инцидент 03.08). Отдаём фронту, потому что молчаливый стоп
+    # ничем не лучше молчаливого цикла: человек всё так же смотрит на очередь,
+    # которая не растёт, и не понимает, что происходит.
+    d["generation_stopped"] = (ch.gen_fail_streak or 0) >= tasks.MAX_GEN_FAIL_STREAK
+    d["generation_stopped_reason"] = ch.gen_fail_reason or ""
+
     # Данные для карточки канала в кабинете: что дальше в очереди и когда
     # опубликуется -- без этого карточка показывает только настройки, а не
     # реальное состояние (см. редизайн кабинета).
@@ -977,6 +984,11 @@ async def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depend
         s.add(ch)
         s.commit()
         s.refresh(ch)
+    # Правка настроек -- тоже изменившиеся обстоятельства: описание канала,
+    # стиль, длина поста прямо влияют на то, что напишет модель. Интерфейс на
+    # экране очереди так и говорит («помогает поменять описание канала»), так
+    # что стоп по неудачам подряд здесь обязан сниматься (инцидент 03.08).
+    tasks.reset_generation_failures(channel_id)
     # Решение владельца 02.08: смена режима публикации не должна оставлять
     # "осиротевшие" посты в поведении прежнего режима -- см.
     # tasks.sync_posts_to_channel_mode.
@@ -1075,6 +1087,10 @@ async def verify_channel(channel_id: int, user: User = Depends(current_user)):
 async def generate_channel(channel_id: int, data: PostIn = PostIn(), user: User = Depends(current_user)):
     with session() as s:
         _own_channel(s, channel_id, user)
+    # Явная просьба человека всегда снимает стоп по неудачам подряд: он видел
+    # причину на экране и всё равно нажал кнопку -- значит пробуем, а не
+    # отвечаем «мы уже сдались» (прод-инцидент 03.08, стоп добавлен там же).
+    tasks.reset_generation_failures(channel_id)
     # Единая модель очереди (C14, решение владельца 01-02.08): "Написать пост
     # сейчас" встаёт в общую очередь на тех же правах, что и плановая
     # генерация по расписанию -- получает scheduled_at и (в режиме
@@ -1414,6 +1430,8 @@ async def publish(post_id: int, background_tasks: BackgroundTasks, user: User = 
     # когда автодогенерация следующего поста в очереди задерживала HTTP-ответ
     # на десятки секунд уже после успешной публикации в Telegram).
     if not result.get("already_published"):
+        # Сброс стопа по неудачам подряд делает сам post_publish_followup:
+        # здесь channel_id ещё не прочитан, а там он под рукой.
         background_tasks.add_task(tasks.post_publish_followup, post_id)
     return result
 
@@ -1453,6 +1471,11 @@ async def reject_post(post_id: int, background_tasks: BackgroundTasks, user: Use
         p.status = "rejected"
         s.add(p); s.commit()
     tasks.cancel_pending_approval(post_id)
+    # Отклонение меняет обстоятельства: список постов, с которыми сверяется
+    # детектор дублей, стал короче -- значит попытка, которая не удавалась,
+    # теперь может удаться. Снимаем стоп по неудачам подряд (см.
+    # tasks.reset_generation_failures, прод-инцидент 03.08).
+    tasks.reset_generation_failures(channel_id)
     # КРИТИЧНО (аудит 02.08): раньше здесь стоял `await tasks._refill_queue(...)`
     # -- ручка держала HTTP-ответ всю генерацию замены (десятки секунд), и на
     # экране «ничего не происходило», пока человек не обновит страницу. Ровно
@@ -1482,6 +1505,9 @@ async def delete_post(post_id: int, background_tasks: BackgroundTasks, user: Use
             s.delete(fb)
         s.flush()
         s.delete(p); s.commit()
+    # Удаление, как и отклонение, укорачивает список для сверки на дубли --
+    # снимаем стоп по неудачам подряд (прод-инцидент 03.08).
+    tasks.reset_generation_failures(channel_id)
     # Догенерация -- в фоне, не держим HTTP-ответ на время работы модели
     # (та же причина, что и в publish_post: раньше ответ ждал десятки секунд,
     # и на экране «ничего не происходило»).

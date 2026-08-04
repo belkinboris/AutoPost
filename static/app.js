@@ -2669,6 +2669,26 @@ function _renderQueueStatus(c, pendingCount, opts){
     </div>`;
   }
 
+  // Плановая генерация остановлена после нескольких неудач подряд.
+  //
+  // Прод-инцидент 03.08: генерация падала на каждой попытке, тик повторял её
+  // раз в минуту, и человек пять минут смотрел на очередь, которая не растёт,
+  // не имея ни одной подсказки. Стоп сам по себе эту беду не лечит -- молча
+  // остановиться ничем не лучше, чем молча повторять. Поэтому говорим прямо:
+  // что случилось, почему мы перестали пробовать и какой рычаг есть у него.
+  if(c.generation_stopped){
+    return `<div class="card" style="background:var(--red-bg,var(--accent-soft));border:none;margin-bottom:14px;padding:14px 16px">
+      <div style="font-size:13px;color:var(--red,var(--accent-dark));font-weight:600">Мы не смогли написать новый пост</div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:2px">
+        ${c.generation_stopped_reason ? esc(c.generation_stopped_reason)+" " : ""}Пробовали несколько раз подряд и остановились, чтобы не тратить ваши токены впустую. В очереди ${counter} — эти посты никуда не денутся.
+      </div>
+      <div style="font-size:13px;color:var(--text-dim);margin-top:6px">
+        Нажмите «Написать пост сейчас» — попробуем снова. Помогает и другое: опубликовать или удалить пост из очереди, поменять описание канала.
+      </div>
+      <button class="btn-ghost btn-sm" style="margin-top:6px;padding:4px 0" ${settingsLink}>Открыть настройки</button>
+    </div>`;
+  }
+
   if(!connected){
     // Главный фикс: раньше это объяснение показывалось ТОЛЬКО при пустой
     // очереди. У пользователя с одним постом из онбординга (типичный случай:
