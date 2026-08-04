@@ -150,7 +150,7 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 333 passed, 11 skipped
+python3 -m pytest -q          # ожидается 338 passed, 12 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__
@@ -169,6 +169,14 @@ DATABASE_URL="sqlite:///./local.db" TICK_SECONDS=99999 \
 
 `TICK_SECONDS=99999` отключает фоновую генерацию — иначе локальный сервер
 начнёт тратить реальные токены.
+
+**Прогон на Postgres обязателен, если тронули схему.** 03.08 миграция
+`BOOLEAN NOT NULL DEFAULT 0` прошла на SQLite и упала на Postgres: колонка не
+создалась, а модель её уже объявила — каждый запрос к постам стал падать, у
+владельца пропали очереди на всех каналах. Тем же прогоном нашлось второе
+расхождение: `ORDER BY ... DESC` кладёт NULL в Postgres ПЕРВЫМИ, в SQLite
+последними. Булевы значения по умолчанию пишите `DEFAULT FALSE`, а сортировку
+по nullable-колонке всегда сопровождайте явным фильтром.
 
 Postgres для проверки миграций и FK:
 

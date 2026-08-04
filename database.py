@@ -578,7 +578,17 @@ def _add_missing_columns():
             if "duplicate_suspected" not in cols:
                 with engine.begin() as conn:
                     conn.execute(text(
-                        "ALTER TABLE post ADD COLUMN duplicate_suspected BOOLEAN NOT NULL DEFAULT 0"
+                        # DEFAULT FALSE, а не DEFAULT 0. Прод-инцидент 03.08:
+                        # SQLite проглатывает 0 как булев ноль, Postgres --
+                        # нет («column is of type boolean but default
+                        # expression is of type integer»). Миграция падала,
+                        # try/except ниже её глушил, колонка не появлялась --
+                        # и КАЖДЫЙ запрос к постам после этого отваливался с
+                        # UndefinedColumn, потому что модель колонку уже
+                        # объявила. У пользователя пропали очереди на всех
+                        # каналах. Все остальные булевы миграции в этом файле
+                        # с самого начала писались FALSE; выбился только этот.
+                        "ALTER TABLE post ADD COLUMN duplicate_suspected BOOLEAN NOT NULL DEFAULT FALSE"
                     ))
                 logger.info("Миграция: добавлена колонка post.duplicate_suspected")
     except Exception:
@@ -693,9 +703,53 @@ def release_channel_generation_claim(s: Session, channel_id: int):
     s.commit()
 
 
+def missing_columns() -> dict:
+    """
+    Какие колонки объявлены в моделях, но отсутствуют в базе. Пусто -- схема
+    в порядке.
+
+    Прод-инцидент 03.08: миграция `duplicate_suspected` падала на Postgres
+    (BOOLEAN DEFAULT 0), try/except в _add_missing_columns её глушил, и
+    приложение спокойно стартовало со схемой, в которой не хватает колонки.
+    Дальше КАЖДЫЙ запрос к постам отваливался с UndefinedColumn: SQLAlchemy
+    перечисляет в SELECT все колонки модели, включая несуществующую. У
+    пользователя пропали очереди на всех каналах, а в логе была одна
+    строчка про миграцию, которую никто не искал.
+
+    Глушить исключения в миграциях по-прежнему правильно (упавшая миграция
+    не должна ронять сервис целиком), но молчать об этом -- нет. Отсюда
+    отдельная проверка ПОСЛЕ миграций.
+    """
+    result = {}
+    try:
+        inspector = inspect(engine)
+        existing_tables = set(inspector.get_table_names())
+        for table_name, table in SQLModel.metadata.tables.items():
+            if table_name not in existing_tables:
+                continue
+            in_db = {c["name"] for c in inspector.get_columns(table_name)}
+            absent = [c.name for c in table.columns if c.name not in in_db]
+            if absent:
+                result[table_name] = absent
+    except Exception:
+        logger.exception("Проверка схемы не удалась")
+    return result
+
+
 def init_db():
     SQLModel.metadata.create_all(engine)
     _add_missing_columns()
+    # Громко, а не в общий поток INFO: до этой проверки сломанная схема
+    # выглядела как нормальный старт, и разбираться приходилось по жалобе
+    # пользователя, а не по логу (прод-инцидент 03.08).
+    drift = missing_columns()
+    if drift:
+        logger.critical(
+            "СХЕМА БАЗЫ НЕПОЛНАЯ, приложение будет падать на запросах к этим "
+            "таблицам: %s. Миграция не отработала -- ищите выше строку "
+            "«Миграция ... не удалась».",
+            "; ".join(f"{t}: {', '.join(cols)}" for t, cols in drift.items()),
+        )
 
 
 def session():
