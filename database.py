@@ -97,6 +97,24 @@ class Channel(SQLModel, table=True):
     # минут фронт и API считают его протухшим (сервер мог перезапуститься
     # посреди генерации) -- см. _channel_dict.
     generating_since: Optional[datetime] = None
+    # Сколько раз подряд генерация поста закончилась ничем, и почему.
+    #
+    # Прод 03.08: детектор дублей браковал каждый пост, тик пробовал заново
+    # каждую минуту, ~54 000 токенов за пять минут сгорело молча, а на экране
+    # мигало «генерируется…». Конкретно ту причину мы убрали (пост теперь
+    # создаётся всегда), но ФОРМА ошибки осталась бы: в generate_for_channel
+    # есть ещё четыре пути, которые возвращают отказ и ничего не создают --
+    # чужой алфавит после перегенерации, «ИИ не смог определить тему»,
+    # ошибка провайдера, непойманное исключение. Любой из них зациклился бы
+    # ровно так же.
+    #
+    # Поэтому счётчик общий, а не заплатка на каждый путь: после
+    # MAX_GEN_FAIL_STREAK неудач подряд плановая генерация останавливается,
+    # причина показывается на экране очереди, а кнопка «Написать пост сейчас»
+    # продолжает работать -- человек видит, что случилось, и решает сам
+    # (сквозной принцип из CLAUDE.md).
+    gen_fail_streak: int = 0
+    gen_fail_reason: str = ""
 
 
 class ChannelRule(SQLModel, table=True):
@@ -565,6 +583,21 @@ def _add_missing_columns():
                 logger.info("Миграция: добавлена колонка post.duplicate_suspected")
     except Exception:
         logger.exception("Миграция post.duplicate_suspected не удалась")
+
+    # Channel.gen_fail_streak / gen_fail_reason -- остановка бесконечных
+    # попыток генерации (прод-инцидент 03.08), см. класс Channel.
+    for _col, _type in (("gen_fail_streak", "INTEGER NOT NULL DEFAULT 0"),
+                        ("gen_fail_reason", "VARCHAR NOT NULL DEFAULT ''")):
+        try:
+            inspector = inspect(engine)
+            if "channel" in inspector.get_table_names():
+                cols = {c["name"] for c in inspector.get_columns("channel")}
+                if _col not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE channel ADD COLUMN {_col} {_type}"))
+                    logger.info(f"Миграция: добавлена колонка channel.{_col}")
+        except Exception:
+            logger.exception(f"Миграция channel.{_col} не удалась")
 
 
 # ── Атомарные захваты (защита от гонок) ───────────────────────────────────

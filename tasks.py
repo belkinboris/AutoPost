@@ -341,10 +341,72 @@ async def generate_for_channel(channel_id: int, topic: str = "", force_pending: 
                     logger.info(f"канал {channel_id}: очередь уже полна, генерацию пропускаем")
                     return {"ok": False, "message": "Очередь уже заполнена",
                             "queue_full": True}
-        return await _generate_for_channel_impl(channel_id, topic, force_pending, target_scheduled_at)
+        result = await _generate_for_channel_impl(channel_id, topic, force_pending, target_scheduled_at)
+        _record_generation_outcome(channel_id, result)
+        return result
     finally:
         with session() as s:
             release_channel_generation_claim(s, channel_id)
+
+
+MAX_GEN_FAIL_STREAK = 3
+
+
+def _record_generation_outcome(channel_id: int, result: dict) -> None:
+    """
+    Ведёт счётчик неудач подряд (Channel.gen_fail_streak).
+
+    Прод-инцидент 03.08: генерация возвращала отказ, тик пробовал заново через
+    минуту, и так без конца -- около 54 000 токенов за пять минут, и ни строчки
+    на экране. Конкретную причину (детектор дублей) мы убрали, но форма ошибки
+    осталась бы: отказов, после которых пост не создаётся, в generate_for_channel
+    целых четыре, и любой зациклился бы точно так же. Поэтому считаем здесь, в
+    одном месте на все пути сразу, а не заплатками по каждому.
+
+    Считаем только отказы, где генерация РЕАЛЬНО пробовала и не смогла
+    (`generation_failed`). «Очередь полна», «уже генерируется», «нет баланса» --
+    не неудачи: первые два штатны, а про баланс экран очереди и так говорит
+    отдельной красной плашкой с кнопкой пополнения.
+    """
+    with session() as s:
+        channel = s.get(Channel, channel_id)
+        if not channel:
+            return
+        if result.get("ok"):
+            if channel.gen_fail_streak or channel.gen_fail_reason:
+                channel.gen_fail_streak = 0
+                channel.gen_fail_reason = ""
+                s.add(channel); s.commit()
+            return
+        if not result.get("generation_failed"):
+            return
+        channel.gen_fail_streak = (channel.gen_fail_streak or 0) + 1
+        channel.gen_fail_reason = (result.get("message") or "")[:300]
+        s.add(channel); s.commit()
+        if channel.gen_fail_streak == MAX_GEN_FAIL_STREAK:
+            logger.warning(
+                f"канал {channel_id}: {MAX_GEN_FAIL_STREAK} неудачи подряд "
+                f"(«{channel.gen_fail_reason}») -- плановую генерацию останавливаю, "
+                f"причина показана пользователю"
+            )
+
+
+def reset_generation_failures(channel_id: int) -> None:
+    """
+    Снимает стоп: обстоятельства изменились, пробовать снова осмысленно.
+
+    Зовётся оттуда, где человек что-то сделал руками -- опубликовал, удалил
+    или отклонил пост, поменял настройки канала, пополнил баланс, нажал
+    «Написать пост сейчас». Именно эти действия и меняют то, из-за чего
+    генерация не получалась (например, короче становится список постов, с
+    которыми сверяется детектор дублей).
+    """
+    with session() as s:
+        channel = s.get(Channel, channel_id)
+        if channel and (channel.gen_fail_streak or channel.gen_fail_reason):
+            channel.gen_fail_streak = 0
+            channel.gen_fail_reason = ""
+            s.add(channel); s.commit()
 
 
 async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pending: bool = False,
@@ -534,7 +596,7 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
             f"user_input_topic=«{topic_to_classify[:80]}» topic_classification={classification} "
             f"generation_mode={generation_mode}"
         )
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": str(e), "generation_failed": True}
     except Exception as e:
         logger.error(f"Ошибка генерации канала {channel_id}: {e}")
         logger.info(
@@ -542,7 +604,8 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
             f"user_input_topic=«{topic_to_classify[:80]}» topic_classification={classification} "
             f"generation_mode={generation_mode}"
         )
-        return {"ok": False, "message": "Временная ошибка. Попробуйте ещё раз через минуту."}
+        return {"ok": False, "message": "Временная ошибка. Попробуйте ещё раз через минуту.",
+                "generation_failed": True}
 
     # Логирование для диагностики (Part 7 задачи): видно какая тема пришла,
     # как классифицирована, какой режим генерации и какая тема в итоге вышла.
@@ -554,7 +617,8 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
     )
 
     if _looks_like_menu(text):
-        return {"ok": False, "message": "ИИ не смог определить тему. Задайте тему поста вручную."}
+        return {"ok": False, "message": "ИИ не смог определить тему. Задайте тему поста вручную.",
+                "generation_failed": True}
 
     # Ставится ниже, если детектор дублей сработал и после перегенерации.
     # Пост при этом всё равно создаётся -- см. длинный комментарий там же.
@@ -580,12 +644,12 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
             if _foreign_script_chars(text2):
                 logger.warning(f"Канал {channel_id}: чужой алфавит и после перегенерации -- пост не создаю")
                 return {"ok": False, "message": "Не удалось написать пост на нужном языке — попробуем позже.",
-                        "foreign_script_skipped": True}
+                        "foreign_script_skipped": True, "generation_failed": True}
             text = text2
         except generator.GenerationError as e:
             logger.warning(f"Канал {channel_id}: перегенерация из-за чужого алфавита не удалась ({e})")
             return {"ok": False, "message": "Не удалось написать пост на нужном языке — попробуем позже.",
-                    "foreign_script_skipped": True}
+                    "foreign_script_skipped": True, "generation_failed": True}
 
     # Пост-проверка на близнеца. Инструкции в промпте оказалось недостаточно:
     # у новостного канала выдача поиска между генерациями одна и та же, и
@@ -1361,6 +1425,9 @@ async def _handle_approval_callback(cq: dict):
         await telegram_api.answer_callback_query(cq_id, "Отклонено.")
         await telegram_api.edit_message_text(chat_id, message_id, "🗑 Пост отклонён.")
         if channel_id:
+            # Отклонение из карточки в Телеграме -- то же действие человека,
+            # что и кнопка на сайте: снимаем стоп по неудачам подряд.
+            reset_generation_failures(channel_id)
             await _refill_queue(channel_id)
 
     elif action == "apedit":
@@ -1469,6 +1536,11 @@ async def post_publish_followup(post_id: int):
             logger.warning(f"post-publish followup (notify send) для поста {post_id}: {e}")
 
     if channel_id:
+        # Публикация меняет обстоятельства: пост ушёл из очереди, список для
+        # сверки на дубли стал короче -- значит попытка, которая не удавалась,
+        # теперь может удаться. Снимаем стоп по неудачам подряд ПЕРЕД
+        # пополнением, иначе _refill_queue выйдет на нём же (инцидент 03.08).
+        reset_generation_failures(channel_id)
         try:
             await _refill_queue(channel_id)
         except Exception as e:
@@ -1957,6 +2029,13 @@ async def _refill_queue(channel_id: int):
         channel = s.get(Channel, channel_id)
         if not channel or not channel.enabled:
             return
+        # Стоп после MAX_GEN_FAIL_STREAK неудач подряд. Без него любой отказ,
+        # после которого пост не создаётся, превращается в вечный цикл раз в
+        # минуту -- ровно то, что случилось 03.08. Ручная кнопка не проходит
+        # через _refill_queue и продолжает работать: человек всегда может
+        # попросить попробовать ещё раз, увидев причину на экране.
+        if (channel.gen_fail_streak or 0) >= MAX_GEN_FAIL_STREAK:
+            return
         pending_count = len(s.exec(
             select(Post).where(
                 Post.channel_id == channel_id,
@@ -2010,6 +2089,12 @@ async def resume_starved_channels(user_id: int):
             Channel.enabled == True,   # noqa
             Channel.verified == True,  # noqa
         )).all()]
+
+    # Пополнение баланса -- изменившиеся обстоятельства: генерация могла
+    # падать именно из-за нуля. Снимаем стоп по неудачам подряд (инцидент
+    # 03.08), иначе _refill_queue выйдет на нём и деньги не заработают.
+    for cid in channel_ids:
+        reset_generation_failures(cid)
 
     for cid in channel_ids:
         try:

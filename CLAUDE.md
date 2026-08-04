@@ -150,7 +150,7 @@ PYTEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/autopost_test
 ## Проверки перед коммитом
 
 ```bash
-python3 -m pytest -q          # ожидается 324 passed, 11 skipped
+python3 -m pytest -q          # ожидается 333 passed, 11 skipped
 python3 -m py_compile main.py tasks.py database.py generator.py billing.py
 cd static && cat app.part*.js > app.js && node --check app.js
 rm -rf __pycache__
@@ -211,4 +211,11 @@ pw.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/
   Теперь пост создаётся ВСЕГДА, а сомнение видно пользователю пометкой
   `Post.duplicate_suspected`. Не возвращайте отказ: это ровно тот путь, где
   платформа решает молча.
+- **Генерация не должна пробовать вечно.** В `generate_for_channel` пять
+  путей, где попытка состоялась, а пост не создан. Каждый из них раньше
+  повторялся тиком раз в минуту без конца и без объяснений. Теперь общий
+  счётчик `Channel.gen_fail_streak`: три неудачи подряд — плановая генерация
+  замолкает, причина видна на экране очереди, ручная кнопка работает.
+  **Добавили новый путь отказа — верните `"generation_failed": True` в
+  словаре**, иначе счётчик его не увидит и цикл вернётся.
 - **Автоплатежи ЮKassa работают** — владелец проверил полный цикл 03.08.
