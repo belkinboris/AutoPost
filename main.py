@@ -178,6 +178,11 @@ app.include_router(user_journeys_router)
 from internal_user_events import router as user_events_router
 app.include_router(user_events_router)
 
+# Выгрузка адресов для письма от владельца (только чтение, ничего не шлёт --
+# см. internal_audience.py, там же почему адреса из Телеграма не годятся).
+from internal_audience import router as audience_router
+app.include_router(audience_router)
+
 # Ручное начисление токенов владельцем (себе для тестов, людям — при сбоях).
 from internal_admin_tokens import router as admin_tokens_router
 app.include_router(admin_tokens_router)
