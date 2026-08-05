@@ -952,6 +952,14 @@ def get_channel(channel_id: int, user: User = Depends(current_user)):
         return _channel_dict(s, _own_channel(s, channel_id, user))
 
 
+# Настройки, от которых зависит время публикации. Меняется любая из них --
+# очередь пересобирается (см. tasks.reschedule_queue).
+_SCHEDULE_FIELDS = {
+    "schedule_kind", "interval_hours", "interval_jitter_minutes",
+    "publish_window_start", "publish_window_end", "daily_times",
+}
+
+
 @app.patch("/api/channels/{channel_id}")
 async def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depends(current_user)):
     with session() as s:
@@ -1018,9 +1026,25 @@ async def patch_channel(channel_id: int, data: ChannelPatch, user: User = Depend
             await tasks.sync_posts_to_channel_mode(channel_id)
         except Exception as e:
             logger.warning(f"синхронизация режима канала {channel_id}: {e}")
+    # Поменялось расписание -- переставляем уже стоящие в очереди посты.
+    #
+    # Владелец 04.08: сменил окно на 16:00-18:00 и интервал на сутки, а посты
+    # остались стоять на 12:28 и 18:28 -- по старым настройкам. Экран при
+    # этом обещает «Пишем и публикуем посты только в это время»: настройка
+    # применялась только к будущим постам, а обещание было про все
+    # (правило 5). Число переставленных возвращаем фронту, чтобы он сказал
+    # об этом вслух, а не подвинул время молча.
+    moved = 0
+    if _SCHEDULE_FIELDS & payload.keys():
+        try:
+            moved = tasks.reschedule_queue(channel_id)
+        except Exception as e:
+            logger.warning(f"пересборка очереди канала {channel_id}: {e}")
     with session() as s:
         ch = s.get(Channel, channel_id)
-        return _channel_dict(s, ch)
+        d = _channel_dict(s, ch)
+        d["rescheduled_posts"] = moved
+        return d
 
 
 @app.delete("/api/channels/{channel_id}")

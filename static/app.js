@@ -2209,7 +2209,26 @@ function renderPostCard(p, pubMs, channelEnabled){
   // «это дубль» значило бы выдать догадку за факт, а она ошибается.
   let duplicateLine="";
   if(p.duplicate_suspected && p.status!=="published" && p.status!=="rejected"){
-    duplicateLine=`<div class="status-pill status-pill-yellow" style="margin-top:6px">⚠️ Похоже на уже готовый пост — проверьте и удалите лишний</div>`;
+    // Владелец 04.08: «не понимаю этот блок». И правильно -- «похоже на уже
+    // готовый пост» не отвечало на единственный вопрос, который возникает:
+    // похоже на КАКОЙ, что с чем сравнивать. Плюс «удалите лишний» звучало
+    // как установленный факт, хотя детектор в этом деле ненадёжен (замеры в
+    // tasks.py) и вполне может ошибаться.
+    //
+    // Теперь называем конкретный пост и даём к нему перейти. Если тот пост
+    // уже удалён (ссылка намеренно без внешнего ключа) -- показываем пометку
+    // без ссылки, а не молчим и не врём.
+    const twin=(App._queuePosts||[]).find(x=>x.id===p.duplicate_of_post_id);
+    const twinTitle=twin?_postHeadline(twin):"";
+    // display:block, а не inline-flex от .status-pill: у плашки несколько слов
+    // и ссылка внутри, а флекс разложил их в колонки -- проверено на
+    // скриншоте. Класс оставляем ради цвета, раскладку задаём свою.
+    const box='class="status-pill status-pill-yellow" style="display:block;margin-top:6px;white-space:normal;line-height:1.45;font-weight:500"';
+    duplicateLine=twinTitle
+      ? `<div ${box}>⚠️ Возможно, повторяет пост «${esc(twinTitle)}» —
+           <a href="#" onclick="scrollToPost(${p.duplicate_of_post_id});return false" style="color:inherit;font-weight:600">сравните</a>.
+           Если это правда повтор, удалите один.</div>`
+      : `<div ${box}>⚠️ Возможно, повторяет один из уже готовых постов — сравните перед публикацией.</div>`;
   }
 
   // ── Кнопки: одна primary + один secondary, остальное в меню "..." ────
@@ -2382,6 +2401,27 @@ function togglePostMenu(postId){
   const el=$(`pmenu_${postId}`);
   if(el) el.classList.toggle("hidden");
 }
+
+// Заголовок поста для ссылок на него: первая непустая строка без разметки.
+function _postHeadline(p){
+  const lines=(p.text||"").split("\n").map(l=>l.replace(/<[^>]+>/g,"").trim()).filter(Boolean);
+  return (lines[0]||"без заголовка").slice(0,60);
+}
+
+// Переход к посту, на который ссылается пометка «возможно, повтор». Если он
+// в свёрнутой истории публикаций -- сначала раскрываем её, иначе ссылка вела
+// бы в пустоту (карточки там есть в DOM, но скрыты).
+function scrollToPost(postId){
+  const el=document.getElementById(`pc_${postId}`);
+  if(!el){toast("Тот пост уже удалён","");return;}
+  const hist=document.getElementById("history_list");
+  if(hist && hist.classList.contains("hidden") && hist.contains(el)) toggleHistory();
+  el.scrollIntoView({behavior:"smooth",block:"center"});
+  el.style.transition="box-shadow .3s";
+  el.style.boxShadow="0 0 0 3px var(--accent)";
+  setTimeout(()=>{el.style.boxShadow="";},2000);
+}
+
 function closePostMenu(postId){
   const el=$(`pmenu_${postId}`);
   if(el) el.classList.add("hidden");
@@ -3485,10 +3525,17 @@ async function saveAdvanced(){
     publish_window_end:($("f_we")||{value:""}).value,
   };
   try{
-    await api("PATCH","/channels/"+App._chan.id,payload);
+    const updated=await api("PATCH","/channels/"+App._chan.id,payload);
     App._chan={...App._chan,...payload};
     _advInterval=null;
-    toast("Сохранено ✓","ok");
+    // Правка расписания переставляет уже стоящие в очереди посты
+    // (tasks.reschedule_queue). Раньше это было бы молчаливым изменением
+    // времени публикации -- человек сохранил настройки и не узнал, что
+    // посты поехали. Говорим числом, а не общими словами.
+    const moved=(updated&&updated.rescheduled_posts)||0;
+    toast(moved
+      ? `Сохранено ✓ — переставили ${moved} ${_plural(moved,"пост","поста","постов")} в очереди`
+      : "Сохранено ✓","ok");
   }catch(e){
     const msg=e&&e.message?e.message:typeof e==="string"?e:"Ошибка сохранения";
     toast(msg,"err");
