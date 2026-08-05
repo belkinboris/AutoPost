@@ -216,21 +216,29 @@ _DUP_STOPWORD_STEMS = {w[:_STEM_LEN] for w in _DUP_STOPWORDS}
 
 def _find_duplicate(text: str, existing: list) -> tuple:
     """
-    Возвращает (совпавший_текст, коэффициент) или (None, лучший_коэффициент).
+    Возвращает (совпавший_элемент, коэффициент) или (None, лучший_коэффициент).
+    Элемент -- это то, что лежало в `existing`: либо текст, либо пара
+    (id поста, текст). Пары приходят из генерации, чтобы пометку «похоже на
+    дубль» можно было привязать к конкретному посту и человек знал, с чем
+    сравнивать.
 
     Дублем считается срабатывание любой из двух метрик (см. _is_duplicate);
     в коэффициенте отдаём Жаккара -- он идёт в логи и в quality-scan как
     привычное число.
     """
-    best, score, matched = None, 0.0, False
-    for other in existing:
+    best, score = None, 0.0
+    for item in existing:
+        # Список может быть как из текстов (внутренний скан качества), так и
+        # из пар (id, текст) -- из генерации приходят пары, чтобы пометку на
+        # карточке можно было привязать к конкретному посту.
+        other = item[1] if isinstance(item, tuple) else item
         sim = _similarity(text, other)
         if _is_duplicate(text, other):
             # Дубль важнее «самого похожего»: возвращаем первый найденный
             # с его коэффициентом, даже если он ниже, чем у не-дубля.
-            return other, max(sim, score)
+            return item, max(sim, score)
         if sim > score:
-            best, score = other, sim
+            best, score = item, sim
     return (None, score)
 
 
@@ -252,7 +260,10 @@ def _reload_recent_texts(channel_id: int, fallback: list) -> list:
                     Post.status.in_(["pending", "scheduled", "published"]),
                 ).order_by(Post.created_at.desc()).limit(30)
             ).all()
-            return [p.text or "" for p in rows]
+            # (id, текст), а не просто текст: пометка «похоже на дубль» без
+            # ссылки на конкретный пост человеку ничего не даёт -- сравнивать
+            # не с чем (владелец 04.08: «не понимаю этот блок»).
+            return [(p.id, p.text or "") for p in rows]
     except Exception as e:
         logger.warning(f"канал {channel_id}: не удалось перечитать тексты для сверки на дубли: {e}")
         return fallback
@@ -623,6 +634,7 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
     # Ставится ниже, если детектор дублей сработал и после перегенерации.
     # Пост при этом всё равно создаётся -- см. длинный комментарий там же.
     duplicate_suspected = False
+    duplicate_of_post_id = None
 
     # Иноязычные вкрапления: одна перегенерация, потом отказ. Порог «хотя бы
     # один символ» -- вкрапление всегда короткое (два-три иероглифа внутри
@@ -666,7 +678,8 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
 
     dup, score = _find_duplicate(text, recent_texts)
     if dup:
-        dup_head = re.sub(r"<[^>]+>", "", dup.strip().split("\n")[0])[:100]
+        duplicate_of_post_id, dup_text = dup
+        dup_head = re.sub(r"<[^>]+>", "", dup_text.strip().split("\n")[0])[:100]
         logger.warning(
             f"Канал {channel_id}: пост дублирует уже существующий "
             f"(совпадение {score:.2f}) «{dup_head}» -- перегенерирую"
@@ -682,7 +695,7 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
             # же событию, попутно тратя лишний поиск и два вызова модели.
             avoid_hint = (
                 "ЗАПРЕЩЕНО писать про это событие -- пост о нём уже есть:\n"
-                f"{re.sub(r'<[^>]+>', '', dup)[:600]}\n\n"
+                f"{re.sub(r'<[^>]+>', '', dup_text)[:600]}\n\n"
                 "Возьми СОВЕРШЕННО ДРУГОЕ событие или факт. Не пересказывай то же самое "
                 "другими словами и не меняй только заголовок."
             )
@@ -696,6 +709,8 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
             tokens += tokens2
             recent_texts = _reload_recent_texts(channel_id, fallback=recent_texts)
             dup2, score2 = _find_duplicate(text2, recent_texts)
+            if dup2:
+                duplicate_of_post_id = dup2[0]
             text = text2
             if dup2:
                 # ПРОД-ИНЦИДЕНТ 03.08. Здесь стояло «пост не создаю»: очередь
@@ -768,6 +783,7 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
             status=("pending" if force_pending else "scheduled"),
             scheduled_at=scheduled_at,
             duplicate_suspected=duplicate_suspected,
+            duplicate_of_post_id=(duplicate_of_post_id if duplicate_suspected else None),
         )
         prev_balance = user.token_balance
         user.token_balance = max(0, user.token_balance - tokens)
@@ -1276,6 +1292,83 @@ async def backfill_orphaned_posts() -> dict:
     if any(fixed.values()):
         logger.info(f"backfill_orphaned_posts: починено {fixed}")
     return fixed
+
+
+# Насколько раньше «сейчас» нельзя поставить первый пост при пересборке
+# очереди. Без этого сохранение настроек могло бы вытолкнуть пост в канал
+# в ту же минуту: человек правил расписание, а не нажимал «Опубликовать»,
+# и мгновенная публикация была бы для него сюрпризом (правило 4).
+RESCHEDULE_MIN_LEAD_MINUTES = 5
+
+
+def reschedule_queue(channel_id: int) -> int:
+    """
+    Переставляет уже стоящие в очереди посты под ТЕКУЩЕЕ расписание канала.
+    Возвращает, сколько постов подвинулось.
+
+    Владелец 04.08: поменял окно публикации на 16:00-18:00 и интервал на
+    сутки -- а посты в очереди остались стоять на 12:28 и 18:28, как их
+    расставили старые настройки. Экран при этом обещает «Пишем и публикуем
+    посты только в это время» -- то есть настройка применялась только к
+    постам, которых ещё нет, а обещание было дано про все (правило 5).
+
+    Порядок постов сохраняем: очередь -- это то, что человек видит списком,
+    и менять её порядок при правке расписания он не просил. Меняем только
+    времена: первый пост встаёт на ближайший подходящий момент, каждый
+    следующий -- на шаг расписания после предыдущего (тот же _next_slot_after,
+    что и у обычной генерации, поэтому окно, интервал, разброс и daily_times
+    учитываются сами).
+
+    Дедлайн подтверждения едет вместе с постом: после C14 это одно и то же
+    время (PostApproval.deadline == Post.scheduled_at), и разъехаться они не
+    должны -- иначе карточка в Телеграме считает до одного момента, а пост
+    стоит на другой.
+    """
+    with session() as s:
+        channel = s.get(Channel, channel_id)
+        if not channel:
+            return 0
+        posts = s.exec(
+            select(Post).where(
+                Post.channel_id == channel_id,
+                Post.status == "scheduled",
+                Post.scheduled_at.is_not(None),
+            ).order_by(Post.scheduled_at)
+        ).all()
+        if not posts:
+            return 0
+
+        now = datetime.utcnow()
+        # Первый слот: не раньше, чем через RESCHEDULE_MIN_LEAD_MINUTES, и
+        # обязательно внутри окна публикации. В режиме подтверждения запас
+        # больше -- человеку нужно успеть увидеть карточку и нажать кнопку,
+        # это тот же SOFT_CONTROL_APPROVAL_MINUTES, что и у новых постов.
+        lead = (RESCHEDULE_MIN_LEAD_MINUTES if channel.auto_publish
+                else config.SOFT_CONTROL_APPROVAL_MINUTES)
+        cursor = _clamp_to_publish_window(channel, now + timedelta(minutes=lead))
+
+        moved = 0
+        for p in posts:
+            if p.scheduled_at != cursor:
+                p.scheduled_at = cursor
+                s.add(p)
+                moved += 1
+                appr = s.exec(
+                    select(PostApproval).where(
+                        PostApproval.post_id == p.id,
+                        PostApproval.status.in_(["waiting", "awaiting_edit"]),
+                    )
+                ).first()
+                if appr:
+                    appr.deadline = cursor
+                    s.add(appr)
+            cursor = _next_slot_after(channel, cursor)
+        s.commit()
+        if moved:
+            logger.info(
+                f"канал {channel_id}: расписание изменилось, переставлено постов: {moved}"
+            )
+        return moved
 
 
 async def sync_posts_to_channel_mode(channel_id: int):

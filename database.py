@@ -177,6 +177,17 @@ class Post(SQLModel, table=True):
     # его, помечаем и показываем человеку -- он видит оба текста рядом и
     # решает сам (сквозной принцип: платформа не решает молча).
     duplicate_suspected: bool = False
+    # На КАКОЙ пост он похож. Без этого пометка нечитаема: владелец 04.08
+    # прямо сказал «не понимаю этот блок» -- «похоже на уже готовый пост»
+    # не отвечает на единственный вопрос, который у человека возникает:
+    # похоже на какой именно, что с чем сравнивать.
+    #
+    # БЕЗ внешнего ключа -- намеренно, по той же схеме, что и аналитические
+    # таблицы (правило 3 в CLAUDE.md): пост, на который ссылаемся, могут
+    # удалить в любой момент, и FK превратил бы обычное удаление в ошибку.
+    # Фронт просто не находит такой id среди постов и показывает пометку без
+    # ссылки.
+    duplicate_of_post_id: Optional[int] = None
 
 
 class PostApproval(SQLModel, table=True):
@@ -593,6 +604,21 @@ def _add_missing_columns():
                 logger.info("Миграция: добавлена колонка post.duplicate_suspected")
     except Exception:
         logger.exception("Миграция post.duplicate_suspected не удалась")
+
+    # Post.duplicate_of_post_id -- на какой пост похож (владелец 04.08),
+    # см. класс Post. Без NOT NULL: у старых постов ссылки нет.
+    try:
+        inspector = inspect(engine)
+        if "post" in inspector.get_table_names():
+            cols = {c["name"] for c in inspector.get_columns("post")}
+            if "duplicate_of_post_id" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE post ADD COLUMN duplicate_of_post_id INTEGER"
+                    ))
+                logger.info("Миграция: добавлена колонка post.duplicate_of_post_id")
+    except Exception:
+        logger.exception("Миграция post.duplicate_of_post_id не удалась")
 
     # Channel.gen_fail_streak / gen_fail_reason -- остановка бесконечных
     # попыток генерации (прод-инцидент 03.08), см. класс Channel.

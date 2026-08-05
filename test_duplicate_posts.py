@@ -513,3 +513,53 @@ def test_thresholds_stay_between_the_measured_bands():
         f"порог Жаккара {tasks.DUPLICATE_THRESHOLD} не выше фона разных эпизодов {worst_different:.3f}"
     )
     assert tasks._is_duplicate(TWIN_A, TWIN_B), "настоящие близнецы перестали ловиться"
+
+
+# ── Пометка должна называть конкретный пост (владелец 04.08) ───────────────
+
+async def test_duplicate_flag_points_at_the_post_it_matched(channel_with_post, monkeypatch):
+    """Владелец про прежнюю пометку: «не понимаю этот блок».
+
+    «Похоже на уже готовый пост» не отвечало на единственный вопрос, который
+    возникает у человека: похоже на КАКОЙ, что с чем сравнивать. Проверяем,
+    что пост запоминает, на кого он похож, — без этого фронту нечего показать
+    и ссылка «Показать его» существовать не может.
+    """
+    import database
+    from database import Post
+    from sqlmodel import select
+
+    _stub_generator(monkeypatch, [TWIN_B, TWIN_B])
+    await tasks.generate_for_channel(channel_with_post, topic="история",
+                                     respect_queue_depth=False)
+
+    with database.session() as s:
+        newest = s.exec(
+            select(Post).where(Post.channel_id == channel_with_post)
+            .order_by(Post.created_at.desc())
+        ).first()
+        assert newest.duplicate_suspected is True
+        assert newest.duplicate_of_post_id is not None, "пометка не знает, на кого похоже"
+        twin = s.get(Post, newest.duplicate_of_post_id)
+        assert twin is not None and twin.id != newest.id
+        assert TWIN_A.split("\n")[0][:20] in twin.text, "ссылка ведёт не на тот пост"
+
+
+async def test_no_duplicate_flag_means_no_reference(channel_with_post, monkeypatch):
+    """Обратная сторона: у обычного поста ссылки быть не должно, иначе фронт
+    нарисует пометку там, где сомнения не было."""
+    import database
+    from database import Post
+    from sqlmodel import select
+
+    _stub_generator(monkeypatch, [OTHER_2])
+    await tasks.generate_for_channel(channel_with_post, topic="история",
+                                     respect_queue_depth=False)
+
+    with database.session() as s:
+        newest = s.exec(
+            select(Post).where(Post.channel_id == channel_with_post)
+            .order_by(Post.created_at.desc())
+        ).first()
+        assert newest.duplicate_suspected is False
+        assert newest.duplicate_of_post_id is None

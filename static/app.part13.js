@@ -117,10 +117,17 @@ async function saveAdvanced(){
     publish_window_end:($("f_we")||{value:""}).value,
   };
   try{
-    await api("PATCH","/channels/"+App._chan.id,payload);
+    const updated=await api("PATCH","/channels/"+App._chan.id,payload);
     App._chan={...App._chan,...payload};
     _advInterval=null;
-    toast("Сохранено ✓","ok");
+    // Правка расписания переставляет уже стоящие в очереди посты
+    // (tasks.reschedule_queue). Раньше это было бы молчаливым изменением
+    // времени публикации -- человек сохранил настройки и не узнал, что
+    // посты поехали. Говорим числом, а не общими словами.
+    const moved=(updated&&updated.rescheduled_posts)||0;
+    toast(moved
+      ? `Сохранено ✓ — переставили ${moved} ${_plural(moved,"пост","поста","постов")} в очереди`
+      : "Сохранено ✓","ok");
   }catch(e){
     const msg=e&&e.message?e.message:typeof e==="string"?e:"Ошибка сохранения";
     toast(msg,"err");
