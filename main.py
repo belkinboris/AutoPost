@@ -330,10 +330,31 @@ def _frontend_version() -> str:
 
 @app.get("/api/config")
 def get_config():
+    # Пакеты уезжают на фронт с подмешанными channels (из CHANNELS_BY_PACKAGE)
+    # и popular -- кабинет строит карточки тарифов ЦЕЛИКОМ из этого ответа.
+    # Аудит 05.08: renderBilling держал собственную захардкоженную копию цен,
+    # а TOKEN_PACKAGES можно переопределить через окружение -- списание пошло
+    # бы по одной цене, экран показывал бы другую. Подмешиваем здесь, а не
+    # в config.py, чтобы env-переопределение пакетов не обязали помнить про
+    # channels: у пакета без своего channels лимит берётся из
+    # CHANNELS_BY_PACKAGE, как и в _channel_limit_with_plan.
+    packages = [
+        {
+            **p,
+            "channels": p.get("channels", config.CHANNELS_BY_PACKAGE.get(p["id"], config.FREE_CHANNELS)),
+            "popular": bool(p.get("popular")),
+        }
+        for p in config.TOKEN_PACKAGES
+    ]
     return {
         "bot_username": config.TELEGRAM_BOT_USERNAME,
         "public_url": config.PUBLIC_URL,
-        "packages": config.TOKEN_PACKAGES,
+        "packages": packages,
+        # Стоимость поста в токенах -- для честного диапазона «осталось N–M
+        # постов». Фронт делил на захардкоженные 40000/20000; при смене
+        # себестоимости числа на экране молча стали бы враньём.
+        "post_tokens_min": config.POST_TOKENS_MIN,
+        "post_tokens_max": config.POST_TOKENS_MAX,
         "soft_control_minutes": config.SOFT_CONTROL_APPROVAL_MINUTES,
         "soft_control_warning_minutes": config.SOFT_CONTROL_WARNING_MINUTES,
         # Целевая глубина очереди -- сколько готовых постов система держит
