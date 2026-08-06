@@ -16,6 +16,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, Header, Background
 from fastapi.responses import PlainTextResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import select, delete
+from sqlalchemy import func
 
 import config
 import security
@@ -24,6 +25,7 @@ import generator
 import research
 import telegram_api
 import tasks
+import database
 from database import (
     init_db, session,
     User, Channel, Source, Post, Payment, Referral, LandingEvent, IdempotencyKey, ProductEvent,
@@ -113,8 +115,16 @@ async def lifespan(app: FastAPI):
         # Ежедневный контроль качества результата. Дефекты вроде постов-
         # близнецов не видны ни в коде, ни в метриках -- сервис проверяет
         # собственный вывод сам и пишет владельцу, если что-то не так.
+        #
+        # CronTrigger на фиксированное время, а НЕ interval hours=24 (аудит
+        # 05.08, E1): interval без next_run_time впервые срабатывает через
+        # сутки ПОСЛЕ старта процесса, а деплои идут чаще суток -- каждый
+        # рестарт обнулял отсчёт, и джоба почти наверняка не запускалась ни
+        # разу. Крон 06:00 UTC (09:00 МСК) срабатывает в это время при любом
+        # старте процесса, не завися от момента деплоя.
+        from apscheduler.triggers.cron import CronTrigger
         _scheduler.add_job(
-            tasks.daily_quality_check, "interval", hours=24,
+            tasks.daily_quality_check, CronTrigger(hour=6, minute=0),
             id="daily_quality_check", replace_existing=True, max_instances=1, coalesce=True,
         )
         _scheduler.start()
@@ -797,12 +807,20 @@ def _enrich_channel_dict(d: dict, s, ch: Channel) -> None:
         # то есть после этой самой ближайшей публикации (аудит 02.08).
         if next_post and next_post.scheduled_at:
             d["next_post_at"] = next_post.scheduled_at.isoformat() + "Z"
-        d["queue_count"] = len(s.exec(
-            select(Post).where(Post.channel_id == ch.id, Post.status.in_(["pending", "scheduled"]))
-        ).all())
-        d["published_count"] = len(s.exec(
-            select(Post).where(Post.channel_id == ch.id, Post.status == "published")
-        ).all())
+        # func.count(), а не len(...all()) (аудит 05.08): прежний код грузил
+        # ВСЕ строки постов целиком, вместе с текстами, только чтобы их
+        # посчитать. У канала с 500 опубликованными постами по 1-2 КБ это
+        # мегабайт по сети и в память на каждую отрисовку карточки канала.
+        d["queue_count"] = s.exec(
+            select(func.count()).select_from(Post).where(
+                Post.channel_id == ch.id, Post.status.in_(["pending", "scheduled"])
+            )
+        ).one()
+        d["published_count"] = s.exec(
+            select(func.count()).select_from(Post).where(
+                Post.channel_id == ch.id, Post.status == "published"
+            )
+        ).one()
         if next_post:
             approval = s.exec(
                 select(PostApproval).where(PostApproval.post_id == next_post.id, PostApproval.status == "waiting")
@@ -1520,8 +1538,20 @@ async def schedule_post(post_id: int, data: ScheduleIn, user: User = Depends(cur
         when = datetime.fromisoformat(data.scheduled_at.replace("Z", ""))
     except Exception:
         raise HTTPException(400, "Неверный формат даты")
+    # Время только в будущем. Аудит 05.08: soседний edit_post и generate_channel
+    # это проверяют, а сюда защита не доехала -- с прошлым временем автопилот
+    # опубликовал бы пост в ближайший тик, что для «Запланировать» абсурдно.
+    if when <= datetime.utcnow():
+        raise HTTPException(400, "Выберите время в будущем")
     with session() as s:
         p = _own_post(s, post_id, user)
+        # Опубликованный/отклонённый пост нельзя вернуть в очередь. Аудит
+        # 05.08: без этой проверки POST на уже опубликованный пост переводил
+        # его обратно в "scheduled", и due_scheduled_posts отправлял его
+        # подписчикам ВТОРОЙ раз (правило 4). edit_post статус проверяет --
+        # значит защита осознанная, просто не доехала сюда.
+        if p.status in ("published", "rejected"):
+            raise HTTPException(400, "Этот пост уже нельзя перенести")
         p.status = "scheduled"
         p.scheduled_at = when
         s.add(p); s.commit(); s.refresh(p)
@@ -1845,6 +1875,13 @@ async def refund_subscription(user: User = Depends(current_user)):
         rub = payment.rub
         tokens = payment.tokens
         sub_id = sub.id
+        # Атомарный захват платежа ДО обращения в ЮKassa (аудит 05.08,
+        # правило 7): два параллельных возврата иначе оба списывали токены за
+        # один возврат денег. Захват переводит платёж в 'refunding' -- второй
+        # запрос получит rowcount 0 и уйдёт с ошибкой ниже, а из выборки
+        # refundable этот платёж уже выпал.
+        if not database.claim_payment_for_refund(s, payment_pk):
+            raise HTTPException(400, "Возврат по этому платежу уже оформляется")
 
     idempotence_key = f"refund-{payment_pk}"
     try:
@@ -1852,9 +1889,14 @@ async def refund_subscription(user: User = Depends(current_user)):
             payment_operation_id=operation_id, amount_rub=rub, idempotence_key=idempotence_key,
         )
     except billing.YooKassaError as exc:
+        # Возврат не состоялся -- отпускаем захват, чтобы человек мог повторить.
+        with session() as s:
+            database.release_payment_refund_claim(s, payment_pk)
         raise HTTPException(400, f"Не удалось оформить возврат: {exc}")
 
     if result.get("status") not in ("succeeded", "pending"):
+        with session() as s:
+            database.release_payment_refund_claim(s, payment_pk)
         raise HTTPException(400, "ЮKassa не подтвердила возврат. Попробуйте ещё раз позже или напишите в поддержку.")
 
     with session() as s:
@@ -1984,19 +2026,30 @@ async def upgrade_subscription(data: UpgradeIn, user: User = Depends(current_use
         u = s.get(User, user.id)
         if not sub or not u:
             raise HTTPException(404, "Подписка не найдена")
+        # Апгрейд применяется ОДНИМ условным UPDATE по старой цене (аудит
+        # 05.08, правило 7). Списание в ЮKassa уже прошло один раз
+        # (детерминированный idempotence_key), но локально два параллельных
+        # запроса начисляли токены ДВАЖДЫ. Захват выигрывает ровно один: он и
+        # начисляет токены + пишет Payment. Проигравший ничего не начисляет --
+        # деньги при этом списаны один раз, всё сходится.
+        claimed = database.claim_subscription_upgrade(
+            s, sub_id=sub_id, from_price_rub=sub.price_rub,
+            new_package_id=data.package_id, new_price_rub=target_pkg["rub"],
+            next_charge_at=now + timedelta(days=config.SUBSCRIPTION_PERIOD_DAYS),
+        )
+        if not claimed:
+            # Переход уже применён параллельным запросом. Это не ошибка для
+            # человека -- тариф сменён, деньги списаны один раз; просто не
+            # начисляем повторно.
+            logger.info("Апгрейд %s: переход уже применён параллельно, повторное начисление пропущено", user.id)
+            return {"ok": True, "charged_rub": charged, "credit_rub": credit_rub, "already_applied": True}
         s.add(Payment(
             user_id=user.id, package_id=data.package_id, label=label,
             rub=charged, tokens=target_pkg["tokens"], status="paid",
             operation_id=yk_payment.get("id", ""),
         ))
         u.token_balance += target_pkg["tokens"]
-        sub.package_id = data.package_id
-        sub.price_rub = target_pkg["rub"]
-        sub.next_charge_at = now + timedelta(days=config.SUBSCRIPTION_PERIOD_DAYS)
-        sub.status = "active"
-        sub.fail_count = 0
-        sub.last_error = ""
-        s.add(u); s.add(sub); s.commit()
+        s.add(u); s.commit()
 
     logger.info(
         "Апгрейд подписки: пользователь %s -> %s, списано %s ₽ (кредит %s ₽)",
@@ -2577,26 +2630,24 @@ def delete_rule(rule_id: int, user: User = Depends(current_user)):
     return {"ok": True}
 
 
-@app.post("/api/bot/start")
-async def bot_start(request: Request):
-    """Webhook для получения /start от бота — привязывает tg_chat_id к аккаунту."""
-    try:
-        data = await request.json()
-        message = data.get("message", {})
-        text = message.get("text", "")
-        chat_id = message.get("chat", {}).get("id")
-        if text.startswith("/start") and chat_id:
-            parts = text.split()
-            if len(parts) > 1 and parts[1].startswith("u"):
-                user_id = int(parts[1][1:])
-                with session() as s:
-                    u = s.get(User, user_id)
-                    if u:
-                        u.tg_chat_id = chat_id
-                        s.add(u); s.commit()
-    except Exception:
-        pass
-    return {"ok": True}
+# Удалено 05.08 (аудит безопасности). Здесь был публичный @app.post(
+# "/api/bot/start") без единой проверки: ни подписи Telegram, ни секрета в
+# пути, ни current_user. Любой POST с ПОДДЕЛАННЫМ chat_id перепривязывал
+# уведомления чужого аккаунта на себя (user_id угадывается — он
+# последовательный), а дальше цепочка доигрывалась до конца: карточка
+# подтверждения уходила атакующему, и он мог опубликовать произвольный текст
+# в чужой канал без всякой аутентификации — прямое нарушение правила 4,
+# снаружи, минуя UI. Плюс `except: pass` глушил всё молча.
+#
+# Эндпоинт был МЁРТВЫМ: бот работает через getUpdates (tasks._process_bot_
+# updates), вебхук на этот адрес нигде не настраивается, фронт его не зовёт.
+# Настоящая привязка /start уже полностью работает в поллинге.
+#
+# Осталось в бэклоге (E-раздел роадмапа): сам механизм привязки по
+# угадываемому `u{user_id}` в поллинге -- тоже слабость (нужен неугадываемый
+# токен вместо порядкового id), но там атакующему нужен реальный
+# Telegram-аккаунт и своя переписка с ботом, а не голый форжабельный POST.
+# Это отдельное проектное решение, оно меняет deep-link в онбординге.
 
 
 class _TgVerifyIn(_BaseModel):

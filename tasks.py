@@ -466,6 +466,7 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
         # например defense-in-depth расхождение классификаторов). Та же логика
         # очистки черновика что и для rejection, но сообщение — уточняющее,
         # не отказное.
+        channel_deleted = False
         with session() as s:
             existing_posts = s.exec(select(Post).where(Post.channel_id == channel_id)).first()
             if not existing_posts:
@@ -477,12 +478,19 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
                         s.delete(k)
                     s.delete(ch)
                     s.commit()
+                    channel_deleted = True
         return {
             "ok": False,
             "message": generator.AMBIGUOUS_INTIMATE_CLARIFICATION,
             "topic_classification": classification,
             "is_clarification": True,
-            "channel_deleted": True,
+            # channel_deleted — по ФАКТУ удаления, а не всегда True (аудит
+            # 05.08): у канала с постами мы ничего не удаляли, а поле врало.
+            "channel_deleted": channel_deleted,
+            # Плановая генерация по такой теме будет отклоняться каждый тик --
+            # без этого флага счётчик неудач слеп и цикл жжёт токены вечно, а
+            # на экране пусто (правило про generation_failed в CLAUDE.md).
+            "generation_failed": True,
         }
 
     rejection_msg = generator.rejection_message(classification)
@@ -496,14 +504,19 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
         # но только если у канала ещё нет ни одного поста (это значит он
         # только что создан в онбординге, а не существующий канал
         # пользователя, тему которого позже отредактировали в настройках).
-        # КРИТИЧНО: при classification_unavailable удалять НЕЧЕГО. Этот статус
-        # означает, что до модели не дозвонились -- провайдер лежит, таймаут,
-        # кончился баланс. Тема пользователя не отклонена, она вообще не
-        # проверялась. Удалить в этот момент только что созданный канал --
-        # значит наказать человека за наш сбой и стереть его работу.
+        # КРИТИЧНО: при НАШЕМ сбое удалять НЕЧЕГО. classification_unavailable --
+        # до модели не дозвонились (провайдер лежит, таймаут, кончился баланс).
+        # classification_failed -- дозвонились, но модель ответила невнятно, а
+        # она недетерминирована: та же тема на следующей попытке пройдёт.
+        # Оба -- наш сбой, а не отклонённая тема. Удалить в этот момент
+        # только что созданный канал значит наказать человека за наш сбой и
+        # стереть его работу (аудит 05.08: classification_failed раньше стирал
+        # канал -- случайная невнятность модели уносила онбординг).
+        OUR_FAULT = classification in ("classification_unavailable", "classification_failed")
+        channel_deleted = False
         with session() as s:
             existing_posts = s.exec(select(Post).where(Post.channel_id == channel_id)).first()
-            if not existing_posts and classification != "classification_unavailable":
+            if not existing_posts and not OUR_FAULT:
                 ch = s.get(Channel, channel_id)
                 if ch:
                     logger.info(f"Канал {channel_id}: удаляю draft-канал из-за отклонённой темы ({classification})")
@@ -512,11 +525,19 @@ async def _generate_for_channel_impl(channel_id: int, topic: str = "", force_pen
                         s.delete(k)
                     s.delete(ch)
                     s.commit()
+                    channel_deleted = True
         return {
             "ok": False,
             "message": rejection_msg,
             "topic_classification": classification,
-            "channel_deleted": True,
+            # По ФАКТУ удаления, а не всегда True (аудит 05.08).
+            "channel_deleted": channel_deleted,
+            # Каждый тик отклонял бы эту тему заново; без флага счётчик неудач
+            # слеп, тик жжёт токены вечно, экран молчит. Верно и для нашего
+            # сбоя (провайдер лёг -> стоп через 3 попытки, причина на экране),
+            # и для честно плохой темы (человек поменяет её в настройках,
+            # patch_channel снимет стоп через reset_generation_failures).
+            "generation_failed": True,
         }
 
     # Загружаем заголовки последних постов чтобы не повторять темы.
