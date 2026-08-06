@@ -2004,6 +2004,102 @@ def _clamp_to_publish_window(channel: Channel, slot: datetime) -> datetime:
     return slot
 
 
+def _window_length_minutes(channel: Channel) -> Optional[int]:
+    """Длина окна публикации в минутах, или None если окна нет."""
+    ws, we = channel.publish_window_start, channel.publish_window_end
+    if not (ws and we):
+        return None
+    try:
+        wsh, wsm = map(int, ws.split(":"))
+        weh, wem = map(int, we.split(":"))
+    except Exception:
+        return None
+    length = (weh * 60 + wem) - (wsh * 60 + wsm)
+    return length if length > 0 else None
+
+
+def _jitter_limit(channel: Channel) -> int:
+    """
+    Сколько минут разброса можно применить на самом деле.
+
+    Настройку человек задаёт одну (0-120), но она не всегда влезает:
+
+    * не больше половины интервала -- иначе посты меняются местами и
+      «раз в 15 минут» с разбросом 60 превращается в кашу;
+    * не больше длины окна публикации -- иначе сдвиг вытолкнет пост за окно,
+      которое мы обещали соблюдать.
+
+    Зажимаем молча, но честно показываем результат на экране: рядом с
+    ползунком написано, сколько получилось на деле (см. renderAdvanced).
+    """
+    limit = max(0, min(int(getattr(channel, "interval_jitter_minutes", 0) or 0), 120))
+    if channel.schedule_kind != "daily":
+        limit = min(limit, max(0, int(channel.interval_hours * 60) // 2))
+    win = _window_length_minutes(channel)
+    if win is not None:
+        limit = min(limit, win)
+    return max(0, limit)
+
+
+def _jitter_offset(channel: Channel, nominal: datetime) -> int:
+    """
+    Сдвиг в минутах для конкретного слота: 0..limit, всегда ВПЕРЁД.
+
+    Только вперёд -- чтобы пост никогда не вышел раньше обещанного интервала
+    и не обогнал соседа по очереди. Поэтому и на экране написано «до N минут
+    позже», а не «±N».
+
+    Детерминированный, а не random: одна и та же очередь при пересчёте
+    обязана дать те же времена, иначе обратный отсчёт на карточке дёргался бы
+    при каждой перерисовке. Умножение на большое нечётное число -- чтобы
+    соседние слоты давали РАЗНЫЕ остатки: прежняя формула брала остаток от
+    самой метки времени, и сутки (86400 мин) по модулю 121 давали шаг 6 --
+    сдвиги шли почти ровной лесенкой вместо разброса.
+    """
+    limit = _jitter_limit(channel)
+    if limit <= 0:
+        return 0
+    minutes = int(nominal.replace(second=0, microsecond=0).timestamp()) // 60
+    return (minutes * 2654435761 + (channel.id or 0) * 40503) % (limit + 1)
+
+
+def _apply_jitter(channel: Channel, nominal: datetime) -> datetime:
+    """Прибавляет сдвиг к ровному времени, не выпуская слот за окно."""
+    slot = nominal + timedelta(minutes=_jitter_offset(channel, nominal))
+    ws, we = channel.publish_window_start, channel.publish_window_end
+    if ws and we:
+        try:
+            weh, wem = map(int, we.split(":"))
+            end = nominal.replace(hour=weh, minute=wem, second=0, microsecond=0)
+            if end >= nominal and slot > end:
+                slot = end
+        except Exception:
+            pass
+    return slot
+
+
+def _strip_jitter(channel: Channel, slot: datetime) -> datetime:
+    """
+    Восстанавливает «ровное» время, из которого получился slot.
+
+    Без этого сдвиг копится: следующий шаг считается от уже сдвинутого
+    времени, и за неделю канал уезжает на часы (воспроизведено 05.08).
+    Хранить ровное время отдельной колонкой не нужно -- сдвиг
+    детерминированный и не больше limit минут, поэтому его просто
+    подбираем: не больше 121 проверки, каждая -- одно умножение.
+
+    Не подобралось -- значит время выбрал человек руками («Написать пост на
+    своё время») или его поставила прежняя версия. Тогда берём как есть:
+    чужое время мы не переизобретаем.
+    """
+    limit = _jitter_limit(channel)
+    for offset in range(0, limit + 1):
+        candidate = slot - timedelta(minutes=offset)
+        if _jitter_offset(channel, candidate) == offset:
+            return candidate
+    return slot
+
+
 def _next_slot_after(channel: Channel, anchor: datetime) -> datetime:
     """
     Следующий слот очереди после anchor -- шаг вперёд по расписанию канала
@@ -2036,20 +2132,27 @@ def _next_slot_after(channel: Channel, anchor: datetime) -> datetime:
         return anchor + timedelta(hours=24)
 
     base_seconds = max(60, channel.interval_hours * 3600)
-    # Разброс ±N минут («чтобы посты появлялись не по секундомеру»). Настройка
-    # существовала в БД и на экране, но её не читала ни одна функция
-    # планирования -- обещание висело впустую (аудит 02.08). Детерминированный
-    # сдвиг от anchor, а не random: одна и та же очередь при пересчёте не
-    # должна «прыгать», иначе таймер на экране дёргался бы на каждой
-    # перерисовке.
-    jitter = max(0, min(getattr(channel, "interval_jitter_minutes", 0) or 0, 120))
-    if jitter:
-        span = jitter * 2 + 1
-        offset = (int(anchor.timestamp()) + (channel.id or 0)) % span - jitter
-        base_seconds += offset * 60
-        base_seconds = max(60, base_seconds)
-    slot = _clamp_to_publish_window(channel, anchor + timedelta(seconds=base_seconds))
-    return slot
+    # Разброс сдвигает САМО ВРЕМЯ ПУБЛИКАЦИИ, а не длину шага -- владелец
+    # 05.08 сформулировал это точно: «уже на этапе определения времени для
+    # выкладки поста время должно в рамках 60 минут рандомно определиться».
+    #
+    # Раньше сдвиг прибавлялся к интервалу, и это давало две беды, обе
+    # воспроизведены:
+    #
+    # 1. Он НАКАПЛИВАЛСЯ. Каждый следующий слот считался от предыдущего
+    #    УЖЕ сдвинутого, поэтому время уезжало в одну сторону: 18:27 ->
+    #    19:27 -> 20:03 -> 20:27 -> 20:45 -> 21:00. «Раз в сутки» переставало
+    #    означать «примерно в одно и то же время».
+    # 2. Окно публикации его СТИРАЛО. Слот, вышедший за окно, зажимался ровно
+    #    в его начало -- и все посты вставали на одну минуту. Ровно то, что
+    #    владелец и увидел: «во всех постах написано 18:30».
+    #
+    # Теперь шаг по расписанию считается от «ровного» времени (сдвиг с якоря
+    # снимается, см. _strip_jitter), а сдвиг применяется в самом конце, к
+    # готовому слоту.
+    nominal_anchor = _strip_jitter(channel, anchor)
+    nominal = _clamp_to_publish_window(channel, nominal_anchor + timedelta(seconds=base_seconds))
+    return _apply_jitter(channel, nominal)
 
 
 def _next_queue_slot(s, channel: Channel) -> datetime:

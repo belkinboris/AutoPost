@@ -108,11 +108,11 @@ async function renderAdvanced(){
         </div>
       </div>
       <label class="field">
-        <span class="field-label">Разброс ±<span id="jlbl">${c.interval_jitter_minutes||0}</span> мин</span>
+        <span class="field-label">Разброс до <span id="jlbl">${c.interval_jitter_minutes||0}</span> мин</span>
         <input type="range" id="f_jitter" min="0" max="120" value="${c.interval_jitter_minutes||0}"
           oninput="$('jlbl').textContent=this.value"
           style="padding:4px 0;height:auto;box-shadow:none;border:none;background:none">
-        <div class="hint">Сдвигает время написания на случайную величину, чтобы посты появлялись не по секундомеру.</div>
+        <div class="hint">Каждый пост выходит на случайную величину позже своего времени — чтобы посты не появлялись по секундомеру.${_jitterClampNote(c)}</div>
       </label>
       <div style="margin-top:14px">
         <div class="field-label" style="margin-bottom:8px">Когда писать посты (UTC)</div>
@@ -179,4 +179,27 @@ function pickAdv(h,btn){
   _advInterval=h;
   document.querySelectorAll("#seg_int button").forEach(b=>b.classList.remove("on"));
   btn.classList.add("on");
+}
+
+// Разброс зажимается половиной интервала и длиной окна публикации
+// (tasks._jitter_limit). Если экран показывает выбранное, а система применяет
+// другое -- это то же враньё, из-за которого окно публикации полгода
+// «работало» вхолостую. Число считает сервер, здесь только объясняем причину.
+function _jitterClampNote(c){
+  const set=c.interval_jitter_minutes||0;
+  const real=typeof c.jitter_effective_minutes==="number"?c.jitter_effective_minutes:set;
+  if(!set || real>=set) return "";
+  const why=[];
+  const half=Math.floor((c.interval_hours||12)*60/2);
+  if(half<set) why.push("это половина интервала");
+  const win=_windowMinutes(c);
+  if(win!==null && win<set) why.push("столько длится окно публикации");
+  return ` <b>Сейчас применяем ${real} мин</b>${why.length?` — ${why.join(", ")}`:""}.`;
+}
+
+function _windowMinutes(c){
+  const parse=v=>{const m=/^(\d{1,2}):(\d{2})$/.exec((v||"").trim());return m?(+m[1])*60+(+m[2]):null;};
+  const a=parse(c.publish_window_start), b=parse(c.publish_window_end);
+  if(a===null||b===null) return null;
+  return b>a?b-a:null;
 }
