@@ -649,6 +649,12 @@ function _nextGenerationLabel(c){
   // ни одного поста (правило 5 в CLAUDE.md; на экране очереди эта проверка
   // была, на дашборде -- нет).
   if((App.user?.token_balance||0)<=0) return "⚠️ Новые посты не пишем — закончились токены";
+  // Генерация остановлена после нескольких неудач подряд (аудит 05.08).
+  // Экран очереди это уже показывал (app.part11.js), а дашборд -- нет, и
+  // карточка обещала «в ближайшие минуты» каналу, где _refill_queue выходит
+  // на gen_fail_streak и не пишет НИЧЕГО (правило 5: не обещать того, чего
+  // система не делает). generation_stopped_reason приходит с сервера.
+  if(c.generation_stopped) return "⚠️ " + (c.generation_stopped_reason || "Новые посты пока не пишем — была ошибка");
   // Единая модель очереди (C14, решение владельца 01-02.08): _refill_queue
   // в tasks.py держит очередь заполненной до queue_target одинаково для
   // обоих режимов публикации (autopilot больше не публикует пост напрямую
@@ -3647,12 +3653,31 @@ async function renderBilling(){
     const r=await api("GET","/subscription");
     App._subscription=r.subscription; App._paymentMethod=r.payment_method||null;
   }catch(_){ App._subscription=null; App._paymentMethod=null; }
-  const plans=[
-    {id:"p1",name:"Старт",price:490,regular:990,channels:1,postsMin:15,postsMax:30,tokens:600000},
-    {id:"p2",name:"Про",price:990,regular:1990,channels:3,postsMin:30,postsMax:60,popular:true,tokens:1200000},
-    {id:"p3",name:"Бизнес",price:2490,regular:4990,channels:10,postsMin:75,postsMax:150,tokens:3000000},
-    {id:"p4",name:"Агентство",price:4990,regular:9990,channels:0,postsMin:150,postsMax:300,tokens:6000000},
-  ];
+  // Карточки тарифов строятся ИЗ ОТВЕТА СЕРВЕРА, а не из своей таблицы.
+  // Аудит 05.08: здесь была захардкоженная копия цен -- четвёртая по счёту
+  // (config._DEFAULT_PACKAGES, config.PLANS, лендинг, здесь). Цены менялись
+  // уже трижды, и в проде пакеты можно переопределить через окружение
+  // (TOKEN_PACKAGES): списывалось бы по одной цене, а на экране стояла бы
+  // другая. Сервер (/api/config) -- единственный источник: он же отдаёт
+  // channels, popular и стоимость поста для диапазона.
+  // post_tokens_min -- простой пост (20k), post_tokens_max -- сложный (40k).
+  // Деление через Math.max/Math.min ниже, а не напрямую: даже если значения
+  // в конфиге когда-нибудь перепутают местами, диапазон останется верным.
+  const tokMin=App.cfg?.post_tokens_min||20000;
+  const tokMax=App.cfg?.post_tokens_max||40000;
+  const plans=(App.cfg?.packages||[]).map(p=>({
+    id:p.id, name:p.title, price:p.rub, regular:p.rub_regular||0,
+    channels:p.channels??0, tokens:p.tokens, popular:!!p.popular,
+    postsMin:Math.floor((p.tokens||0)/Math.max(tokMin,tokMax)),
+    postsMax:Math.floor((p.tokens||0)/Math.min(tokMin,tokMax)),
+  }));
+  if(!plans.length){
+    // Конфиг не догрузился -- честная ошибка вместо пустого экрана тарифов.
+    $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap"><div class="card" style="text-align:center;padding:24px">
+      <p style="color:var(--text-dim)">Не удалось загрузить тарифы. Обновите страницу — если не поможет, напишите нам.</p>
+    </div></div>`;
+    return;
+  }
   const sub=App._subscription||null;
   // Найдено владельцем 31.07: у кого уже есть тариф, тому не нужны во весь
   // экран четыре карточки "Старт/Про/Бизнес/Агентство" -- нужен только свой
@@ -3678,7 +3703,7 @@ async function renderBilling(){
   const hasCard=!!App._paymentMethod;
   $("app").innerHTML=topbar("dashboard","назад")+`<div class="wrap">
     <div class="page-head"><h1>Тарифы</h1>
-      <p>Осталось <b>${Math.floor((App.user?.token_balance||0)/40000)}–${Math.floor((App.user?.token_balance||0)/20000)}</b> постов.<br>
+      <p>Осталось <b>${Math.floor((App.user?.token_balance||0)/Math.max(tokMin,tokMax))}–${Math.floor((App.user?.token_balance||0)/Math.min(tokMin,tokMax))}</b> постов.<br>
       <span style="font-size:13px;color:var(--text-faint)">Диапазон зависит от сложности: пост с поиском свежих новостей расходует больше, простой — меньше.</span></p></div>
     ${(!App.cfg?.yookassa_enabled&&!App.cfg?.yoomoney_enabled)?`<div class="card" style="border-color:var(--accent);background:var(--accent-soft);margin-bottom:16px">
       <p style="color:var(--accent-dark)">Приём платежей настраивается.</p></div>`:""}
@@ -3983,14 +4008,27 @@ async function buy(pid){
   // словами -- человек должен понимать, что подписывается на повторяющийся
   // платёж, а не платит один раз. Отмена тут же названа, чтобы это не
   // выглядело ловушкой.
+  //
+  // АУДИТ 05.08: здесь стоял голый window.confirm() -- единственное место в
+  // всей коммерческой части, где не используется customConfirm (см. его
+  // же обоснование в app.part01.js: нативные кнопки OK/Cancel всегда на
+  // английском и не переименовываются). upgradePlan() и refundSubscription()
+  // уже используют customConfirm для куда менее рискованных решений
+  // (смена/возврат тарифа у уже платящего человека) -- а самое первое,
+  // самое решающее место воронки, где человек ещё никому не доверяет,
+  // встречало его системным попапом с "OK"/"Cancel" на чужом языке поверх
+  // мобильного экрана. Плюс: в WebView Телеграма (а сюда заходят и оттуда,
+  // см. openLink ниже) нативные диалоги на некоторых клиентах ведут себя
+  // ненадёжно. Заменено на тот же customConfirm, что и везде в биллинге.
   const plan=(App.cfg?.packages||[]).find(p=>p.id===pid);
   const days=App.cfg?.subscription_period_days||30;
   if(plan && App.cfg?.subscription_enabled){
-    const ok=confirm(
-      `Тариф «${plan.title}» — ${plan.rub} ₽ каждые ${days} дней.\n\n`+
+    const ok=await customConfirm(
+      `Тариф «${plan.title}» — ${plan.rub} ₽ каждые ${days} дней`,
       `Первый платёж спишется сейчас, дальше — автоматически раз в ${days} дней, `+
       `пока вы не отмените подписку.\n\n`+
-      `Отменить и отвязать карту можно в любой момент на этой же странице.`
+      `Отменить и отвязать карту можно в любой момент на этой же странице.`,
+      {confirmLabel:"Оплатить", cancelLabel:"Передумал(а)"}
     );
     if(!ok){ logProductEvent("payment_declined_at_confirm", pid); return; }
   }

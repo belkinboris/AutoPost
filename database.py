@@ -729,6 +729,69 @@ def release_channel_generation_claim(s: Session, channel_id: int):
     s.commit()
 
 
+def claim_payment_for_refund(s: Session, payment_id: int) -> bool:
+    """
+    Захватывает платёж на возврат: paid -> refunding. True -- возвращаем мы,
+    нам и списывать токены после подтверждения ЮKassa. False -- этот платёж
+    уже возвращается или возвращён кем-то другим.
+
+    Аудит 05.08 (правило 7): два параллельных /api/subscription/refund оба
+    проходили _find_refundable_payment, оба звали ЮKassa с одним ключом
+    (деньги возвращались один раз), но оба списывали токены -- человек терял
+    вдвое больше, чем вернул деньгами. Плюс, если второй запрос приходил
+    после первого коммита, _find_refundable_payment (фильтр status=='paid')
+    отдавал СЛЕДУЮЩИЙ по свежести платёж -- и возвращался платёж, о котором
+    человек не просил. Промежуточный статус 'refunding' закрывает оба:
+    возвращаемый платёж выпадает из выборки refundable сразу же.
+    """
+    res = s.execute(
+        text("UPDATE payment SET status = 'refunding' "
+             "WHERE id = :pid AND status = 'paid'"),
+        {"pid": payment_id},
+    )
+    s.commit()
+    return res.rowcount == 1
+
+
+def release_payment_refund_claim(s: Session, payment_id: int):
+    """Возвращает платёж в 'paid' -- ЮKassa возврат не подтвердила, можно
+    попробовать снова."""
+    s.execute(
+        text("UPDATE payment SET status = 'paid' "
+             "WHERE id = :pid AND status = 'refunding'"),
+        {"pid": payment_id},
+    )
+    s.commit()
+
+
+def claim_subscription_upgrade(s: Session, sub_id: int, from_price_rub: int,
+                               new_package_id: str, new_price_rub: int,
+                               next_charge_at: datetime) -> bool:
+    """
+    Применяет апгрейд к подписке ОДНИМ условным UPDATE. True -- апгрейд
+    применили мы (значит нам и начислять токены + писать Payment). False --
+    этот же переход уже применён параллельным запросом, начислять НЕЛЬЗЯ.
+
+    Аудит 05.08 (правило 7): idempotence_key апгрейда детерминирован, поэтому
+    ЮKassa при двух одновременных запросах спишет ОДИН раз. Но локальной
+    защиты не было: оба запроса читали старый price_rub до того, как первый
+    записал новый, оба начисляли target_pkg["tokens"] и оба писали строку
+    Payment -- двойное начисление за одно списание. Условие
+    `price_rub = :from_price` -- тот самый признак «до апгрейда»: как только
+    первый его сдвинул, второй получит rowcount 0.
+    """
+    res = s.execute(
+        text("UPDATE subscription SET package_id = :new_pkg, price_rub = :new_price, "
+             "next_charge_at = :nca, status = 'active', fail_count = 0, last_error = '' "
+             "WHERE id = :sid AND price_rub = :from_price "
+             "AND status IN ('active', 'suspended')"),
+        {"new_pkg": new_package_id, "new_price": new_price_rub, "nca": next_charge_at,
+         "sid": sub_id, "from_price": from_price_rub},
+    )
+    s.commit()
+    return res.rowcount == 1
+
+
 def missing_columns() -> dict:
     """
     Какие колонки объявлены в моделях, но отсутствуют в базе. Пусто -- схема
