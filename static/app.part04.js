@@ -120,9 +120,14 @@ async function qsGenerate(){
   }
   const about=($("qs_about").value||"").trim();
   if(!about) return toast("Опишите тему","err");
+  // Стиль -- необязательный. Запоминаем в App._qsStyle, чтобы он пережил
+  // «← Назад» и уточняющий вопрос про тему (иначе человек ввёл бы его
+  // дважды), и передаём в генерацию отдельным аргументом.
+  const style=($("qs_style")?.value||"").trim();
+  App._qsStyle = style;
   _qsGenerateInFlight = true;
   try{
-    await _qsGenerateImpl(about);
+    await _qsGenerateImpl(about, style);
   } finally {
     _qsGenerateInFlight = false;
   }

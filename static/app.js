@@ -843,6 +843,7 @@ function renderQuickStart(){
   App._qsRequestId = "qs" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   App.channelId = null;
   App._qsAbout = "";
+  App._qsStyle = "";
   App._chan = null;
   // Сбрасываем и @username: иначе канал, введённый в прошлой попытке
   // онбординга, молча приклеился бы к следующему созданному каналу.
@@ -929,16 +930,34 @@ function renderQuickStartGenerate(prefillTopic){
       <!-- Было двумя абзацами подряд, и оба говорили одно и то же: «сначала
            покажем пример поста» и «канал подключите позже». Второй абзац
            добавлял к этому только перечисление настроек -- его и оставили. -->
-      <p style="color:var(--text-dim)">Сначала покажем пример поста. Канал, стиль, длину и расписание настроите потом.</p>
+      <p style="color:var(--text-dim)">Сначала покажем пример поста. Канал, длину и расписание настроите потом.</p>
       ${App._qsChannelHandle?`<p style="color:var(--text-faint);font-size:13px;margin-top:6px">Канал ${esc(App._qsChannelHandle)} запомнили — подключим его после первого поста.</p>`:""}
     </div>
     <div class="card">
-      <textarea id="qs_about" rows="3" placeholder="Например: M&A сделки в России, Roblox, салон красоты, криптоновости" style="font-size:15px"></textarea>
+      <label class="field"><span class="field-label">О чём пост</span>
+        <textarea id="qs_about" rows="2" placeholder="Например: M&A сделки в России, Roblox, салон красоты, криптоновости" style="font-size:15px"></textarea>
+      </label>
+      <!-- Поле стиля добавлено 06.08. По данным воронки «не тот стиль» -- жалоба
+           №1 на первый пост (главная причина, по которой человек не платит).
+           Раньше стиль в онбординге не спрашивали вовсе: канал создавался с
+           пустым channel.style и генерация падала в общий ИИ-пресет, который
+           сам код помечал как дававший «75% не тот стиль». Теперь человек
+           задаёт стиль своими словами, и он идёт в промпт (channel.style ->
+           блок «СТИЛЬ:» в generator.generate_post) и сохраняется на канал, то
+           есть работает и для всех следующих постов, не только первого.
+           Поле необязательное: пустое -- прежнее поведение, лишнее
+           обязательное поле на первом экране снижало бы activation. -->
+      <label class="field mt"><span class="field-label">Каким стилем писать <span style="color:var(--text-faint);font-weight:400">— необязательно</span></span>
+        <textarea id="qs_style" rows="2" placeholder="Например: коротко и по делу, без воды; с юмором и мемами; строго и экспертно; тёплый личный тон, обращение на «ты»" style="font-size:15px"></textarea>
+      </label>
     </div>
     <button class="btn" style="width:100%;justify-content:center;margin-top:16px;padding:14px"
       onclick="qsGenerate()" id="qs_btn">Сгенерировать пост</button>
   </div>`;
   if(prefillTopic){const el=$("qs_about");if(el) el.value=prefillTopic;}
+  // Восстанавливаем то, что человек уже вводил (например после «← Назад»
+  // или уточняющего вопроса про тему) -- иначе стиль молча терялся.
+  if(App._qsStyle){const el=$("qs_style");if(el) el.value=App._qsStyle;}
   setTimeout(()=>{const el=$("qs_about");if(el) el.focus();},100);
 }
 
@@ -1073,17 +1092,23 @@ async function qsGenerate(){
   }
   const about=($("qs_about").value||"").trim();
   if(!about) return toast("Опишите тему","err");
+  // Стиль -- необязательный. Запоминаем в App._qsStyle, чтобы он пережил
+  // «← Назад» и уточняющий вопрос про тему (иначе человек ввёл бы его
+  // дважды), и передаём в генерацию отдельным аргументом.
+  const style=($("qs_style")?.value||"").trim();
+  App._qsStyle = style;
   _qsGenerateInFlight = true;
   try{
-    await _qsGenerateImpl(about);
+    await _qsGenerateImpl(about, style);
   } finally {
     _qsGenerateInFlight = false;
   }
 }
 
-async function _qsGenerateImpl(about){
-  console.log(`[qsGenerate] input_topic=«${about}» client_request_id=${App._qsRequestId}`);
-  trackGoal("quick_start_submitted",{topic:about});
+async function _qsGenerateImpl(about, style){
+  style = (style || "").trim();
+  console.log(`[qsGenerate] input_topic=«${about}» style=«${style}» client_request_id=${App._qsRequestId}`);
+  trackGoal("quick_start_submitted",{topic:about,has_style:!!style});
   const btn=$("qs_btn");
   btn.innerHTML='<span class="spinner"></span> Проверяю тему…';btn.disabled=true;
 
@@ -1144,6 +1169,10 @@ async function _qsGenerateImpl(about){
   try{
     chan=await api("POST","/channels",{
       title, about,
+      // Стиль, который человек описал своими словами. Уходит в channel.style,
+      // оттуда в промпт (блок «СТИЛЬ:») и сохраняется на канал -- работает и
+      // для первого поста, и для всех следующих. Пустой -- прежнее поведение.
+      style,
       // @username, введённый на шаге «Проанализировать мой канал». Раньше он
       // никуда не сохранялся, и человеку приходилось вводить его заново при
       // подключении.
