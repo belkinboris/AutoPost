@@ -1,8 +1,9 @@
 
 
-async function _qsGenerateImpl(about){
-  console.log(`[qsGenerate] input_topic=«${about}» client_request_id=${App._qsRequestId}`);
-  trackGoal("quick_start_submitted",{topic:about});
+async function _qsGenerateImpl(about, style){
+  style = (style || "").trim();
+  console.log(`[qsGenerate] input_topic=«${about}» style=«${style}» client_request_id=${App._qsRequestId}`);
+  trackGoal("quick_start_submitted",{topic:about,has_style:!!style});
   const btn=$("qs_btn");
   btn.innerHTML='<span class="spinner"></span> Проверяю тему…';btn.disabled=true;
 
@@ -63,6 +64,10 @@ async function _qsGenerateImpl(about){
   try{
     chan=await api("POST","/channels",{
       title, about,
+      // Стиль, который человек описал своими словами. Уходит в channel.style,
+      // оттуда в промпт (блок «СТИЛЬ:») и сохраняется на канал -- работает и
+      // для первого поста, и для всех следующих. Пустой -- прежнее поведение.
+      style,
       // @username, введённый на шаге «Проанализировать мой канал». Раньше он
       // никуда не сохранялся, и человеку приходилось вводить его заново при
       // подключении.
